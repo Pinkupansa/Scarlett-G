@@ -1,0 +1,3 @@
+[submodule "EvolutionaryAlgorithms"]
+	path = EvolutionaryAlgorithms
+	url = git@github.com:Pinkupansa/EvolutionaryAlgorithms.git
