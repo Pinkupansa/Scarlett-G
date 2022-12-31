@@ -1,3 +1,6 @@
 [submodule "EvolutionaryAlgorithms"]
 	path = EvolutionaryAlgorithms
 	url = git@github.com:Pinkupansa/EvolutionaryAlgorithms.git
+[submodule "libchess"]
+	path = libchess
+	url = git@github.com:kz04px/libchess.git
