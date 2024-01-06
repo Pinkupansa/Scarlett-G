@@ -4,6 +4,7 @@
 #include <regex>
 #include <string>
 #include <vector>
+#include <ctype.h>
 
 PgnToCoordinatesConverter::PgnToCoordinatesConverter(const std::string &pgn_file_path, const std::string &coordinates_file_path)
     : pgn_file_path_(pgn_file_path), coordinates_file_path_(coordinates_file_path)
@@ -48,6 +49,18 @@ void PgnToCoordinatesConverter::read_pgn_file()
 
                 if (!(token.find("1-0") == std::string::npos && token.find("0-1") == std::string::npos && token.find("1/2-1/2") == std::string::npos))
                 {
+                    if (token.find("1-0") != std::string::npos)
+                    {
+                        coordinates_file_ << "0 ";
+                    }
+                    else if (token.find("0-1") != std::string::npos)
+                    {
+                        coordinates_file_ << "1 ";
+                    }
+                    else if (token.find("1/2-1/2") != std::string::npos)
+                    {
+                        coordinates_file_ << "-1 ";
+                    }
                     gameBegun = false;
                     break;
                 }
@@ -75,12 +88,23 @@ libchess::Square PgnToCoordinatesConverter::stringToSquare(std::string s)
     return libchess::Square(file, rank);
 }
 
+void rm_nonprinting(std::string &str)
+{
+    str.erase(std::remove_if(str.begin(), str.end(),
+                             [](unsigned char c)
+                             {
+                                 return !std::isprint(c);
+                             }),
+              str.end());
+}
+
 void PgnToCoordinatesConverter::convert_moves_to_coordinates()
 {
     libchess::Position pos;
     pos.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-    for (const auto &move : moves_)
+    for (auto move : moves_)
     {
+        rm_nonprinting(move);
         std::string moveString;
         if (move.find("O-O-O") != std::string::npos)
         {
@@ -109,9 +133,12 @@ void PgnToCoordinatesConverter::convert_moves_to_coordinates()
             auto legal_moves = pos.legal_moves();
             // remove x and + and #
             std::string move_without_symbols = move;
+
             move_without_symbols.erase(std::remove(move_without_symbols.begin(), move_without_symbols.end(), 'x'), move_without_symbols.end());
             move_without_symbols.erase(std::remove(move_without_symbols.begin(), move_without_symbols.end(), '+'), move_without_symbols.end());
             move_without_symbols.erase(std::remove(move_without_symbols.begin(), move_without_symbols.end(), '#'), move_without_symbols.end());
+            // remove spaces
+
             // remove substrings "=Q", "=R", "=B", "=N"
             int index = move_without_symbols.find("=Q");
             if (index != std::string::npos)
@@ -170,11 +197,14 @@ void PgnToCoordinatesConverter::convert_moves_to_coordinates()
             }
 
             // get two last characters to make toSquare
+
             std::string to = move_without_symbols.substr(move_without_symbols.length() - 2);
             // std::cout << move_without_symbols << std::endl;
             // std::cout << to << std::endl;
-            libchess::Square toSquare = stringToSquare(to);
+            libchess::Square toSquare;
+            toSquare = stringToSquare(to);
             libchess::Square fromSquare;
+
             // remove piece symbol
             if (piece != libchess::Piece::None && piece != libchess::Piece::Pawn)
             {
@@ -281,14 +311,17 @@ void PgnToCoordinatesConverter::convert_moves_to_coordinates()
         }
         catch (const std::exception &e)
         {
+
             std::string promotion = move.substr(move.length() - 1, 1);
-            // lower
+
             if (!(promotion[0] >= 'A' && promotion[0] <= 'Z'))
             {
+                // there is a check sign at the end
                 promotion = move.substr(move.length() - 2, 1);
             }
 
-            promotion[0] = promotion[0] + 32;
+            // lower
+            promotion[0] = tolower(promotion[0]);
             moveString = moveString + promotion;
             try
             {

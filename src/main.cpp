@@ -5,19 +5,24 @@
 #include "position.hpp"
 #include "player.hpp"
 #include "human_player.hpp"
-#include "simple_mmab.hpp"
-#include "trainer.hpp"
+#include "scarlett_core.hpp"
+#include "scarlett_trainer.hpp"
 
 int main(int argc, char *argv[])
 {
 
     if (argc == 2)
     {
-        std::cout << "prout" << std::endl;
         if (strcmp(argv[1], "train") == 0)
         {
-            Trainer *trainer = new Trainer();
+            ScarlettTrainer *trainer = new ScarlettTrainer();
             trainer->train();
+            delete trainer;
+        }
+        if (strcmp(argv[1], "test") == 0)
+        {
+            ScarlettTrainer *trainer = new ScarlettTrainer();
+            trainer->testDefault();
             delete trainer;
         }
         return 0;
@@ -26,14 +31,14 @@ int main(int argc, char *argv[])
     Player *player2;
     Player *currentPlayer;
 
-    ScarlettCore *evaluator = new ScarlettCore(true, 5);
+    ScarlettCore *evaluator = new ScarlettCore(1, 5);
 
     if (argc >= 3)
     {
         if (strcmp(argv[1], "ai") == 0)
         {
 
-            player1 = new ScarlettCore(true, 7);
+            player1 = new ScarlettCore(1, 6);
         }
         if (strcmp(argv[1], "human") == 0)
         {
@@ -43,7 +48,7 @@ int main(int argc, char *argv[])
         if (strcmp(argv[2], "ai") == 0)
         {
 
-            player2 = new ScarlettCore(false, 6);
+            player2 = new ScarlettCore(1, 6);
         }
         if (strcmp(argv[2], "human") == 0)
         {
@@ -51,7 +56,7 @@ int main(int argc, char *argv[])
             player2 = new HumanPlayer();
         }
     }
-
+    evaluator = new ScarlettCore(1, 1);
     libchess::Position pos;
     if (argc >= 4)
     {
@@ -70,11 +75,11 @@ int main(int argc, char *argv[])
         pos.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     }
     std::cout << pos;
-    int turn = 0;
+    ((ScarlettCore *)evaluator)->printWeights();
     while (true)
     {
 
-        if (turn % 2 == 0)
+        if (pos.turn() == 0)
         {
             currentPlayer = player1;
         }
@@ -88,10 +93,11 @@ int main(int argc, char *argv[])
         // int score = evaluator->evaluate(cr);
         // std::cout << "Score without calculation: " << score << std::endl;
         std::cout << pos;
+        std::cout << "Evaluation : " << evaluator->evaluate(pos) * (1 - 2 * (int)pos.turn()) << std::endl;
         if (pos.is_checkmate())
         {
             std::cout << "Checkmate!" << std::endl;
-            if (turn % 2 == 0)
+            if (pos.turn() == 0)
             {
                 std::cout << "White wins!" << std::endl;
             }
@@ -111,11 +117,10 @@ int main(int argc, char *argv[])
             std::cout << "Draw!" << std::endl;
             break;
         }
-
-        turn++;
     }
 
     delete player1;
     delete player2;
+    delete evaluator;
     return 0;
 }
