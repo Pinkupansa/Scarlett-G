@@ -7,16 +7,25 @@
 #include <limits>
 #include <set>
 #include <time.h>
+#include "utils.hpp"
 #define DEBUG 0
 #define USAGE_MODE 1
 #define CHECKMATE_CONSTANT 1000000
+#define BEST_POSSIBLE_SCORE 100000000
 #define DRAW_OR_STALEMATE_CONSTANT 0
+#define USE_BOOK 0
+#define USE_TRANSPOSITION_TABLE 0
+#define LAZY_EVAL_MARGIN 200
 ScarlettCore::ScarlettCore(int color, int depth)
 {
     this->color = color;
     this->depth = depth;
 
-    this->transpositionTable = new std::map<uint64_t, std::pair<int, int>>();
+    
+    this->transpositionTable = new TranspositionTable();
+    this->principalVariationTable = new std::map<uint64_t, libchess::Move>();
+    this->zobristHasher = new PositionHasher();
+    this->openingBook = new OpeningBook("../resources/opening_book.txt", zobristHasher);
 
     pieceValues[libchess::Piece::Pawn] = PAWN_VALUE;
     pieceValues[libchess::Piece::Knight] = this->KNIGHT_VALUE;
@@ -68,6 +77,8 @@ ScarlettCore::ScarlettCore(int color, int depth)
     this->MULTICUT_DEPTH = 6;
     this->MC_NUM = 10;
     this->MC_CUT = 3;
+
+    this->QUIESCENCE_DEPTH = 0;
 
     killerMoves = new std::unordered_set<std::pair<libchess::Move, int>, pair_hash>();
 }
@@ -155,17 +166,20 @@ ScarlettCore::~ScarlettCore()
 {
     delete this->transpositionTable;
     delete this->killerMoves;
+    delete this->openingBook;
+    delete this->principalVariationTable;
+    delete this->zobristHasher;
 }
 
 libchess::Move ScarlettCore::getMove(libchess::Position pos)
 {
-
     this->nodesSearched = 0;
     this->nCutoffs = 0;
     this->timeSpentSorting = 0;
     this->nKillerHits = 0;
 
     std::vector<libchess::Move> moves = pos.legal_moves();
+
 
 #if DEBUG
     std::cout << std::endl
@@ -189,33 +203,35 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     std::cout << std::endl;
 #endif
     libchess::Move bestMove;
-    int bestScore;
-
-    // time
     clock_t start;
     double duration;
     start = clock();
+    int bestScore = 0;
+    if(!(openingBook->tryGetMove(pos, bestMove) and USE_BOOK)){
+        bestScore = -BEST_POSSIBLE_SCORE;
 
-    bestScore = -CHECKMATE_CONSTANT;
-
-    for (libchess::Move move : moves)
-    {
-#if DEBUG
-        std::cout << "TEST MOVE : " << move << std::endl;
-#endif
-        pos.makemove(move);
-#if DEBUG
-        std::cout << pos << std::endl;
-#endif
-        int score = -search(pos, depth - 1, -CHECKMATE_CONSTANT, CHECKMATE_CONSTANT, true);
-        pos.undomove();
-        if (score > bestScore)
+        for (libchess::Move move : moves)
         {
-            // std::cout << "Score: " << (2 * (1 - color) - 1) * score << std::endl;
-            bestScore = score;
-            bestMove = move;
+    #if DEBUG
+            std::cout << "TEST MOVE : " << move << std::endl;
+    #endif
+            pos.makemove(move);
+    #if DEBUG
+            std::cout << pos << std::endl;
+    #endif
+            int score = -search(pos, depth - 1, -BEST_POSSIBLE_SCORE, -bestScore, true);
+            pos.undomove();
+            if (score > bestScore)
+            {
+                // std::cout << "Score: " << (2 * (1 - color) - 1) * score << std::endl;
+                bestScore = score;
+                bestMove = move;
+            }
         }
     }
+    transpositionTable->addEntry(pos.hash(), bestScore, depth, EntryType::EXACT);
+    //principalVariationTable->insert(std::pair<uint64_t, libchess::Move>(pos.hash(), bestMove));
+    
 #if USAGE_MODE
     duration = (clock() - start) / (double)CLOCKS_PER_SEC;
     std::cout << std::endl;
@@ -229,8 +245,7 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     // std::cout << "Time spent sorting: " << timeSpentSorting / (double)CLOCKS_PER_SEC << std::endl;
     std::cout << "Killer hits: " << nKillerHits << std::endl;
     std::cout << "Number of killer moves: " << killerMoves->size() << std::endl;
-    std::cout << pos << std::endl;
-    std::cout << pos.get_fen() << std::endl;
+
 #endif
 
     reinitKillerMoves();
@@ -262,30 +277,41 @@ bool ScarlettCore::multicutPruning(libchess::Position &pos, std::vector<libchess
     return false;
 }
 
-int ScarlettCore::nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta)
+int ScarlettCore::nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent)
 {
     pos.makenull();
     int reduct = (USE_ADPT && depth > ADPT_DEPTH) ? NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION - 1;
     int score;
+    
+    //score = quiescent? -quiescenceSearch(pos, depth - reduct, -beta, -beta + 1, false) : -search(pos, -beta, -beta + 1, false, depth - reduct);
     score = -search(pos, depth - reduct, -beta, -beta + 1, false);
     pos.undonull();
     return score;
 }
-int ScarlettCore::quiescenceSearch(libchess::Position &pos, int alpha, int beta)
+int ScarlettCore::quiescenceSearch(libchess::Position &pos, int alpha, int beta,  bool nullMoveAllowed, int depth)
 {
-    int stand_pat = evaluate(pos);
-    if (stand_pat >= beta)
-        return beta;
+    int stand_pat = evaluate(pos, beta);
+    if (stand_pat >= beta or depth == 0)
+        return stand_pat;
     if (alpha < stand_pat)
         alpha = stand_pat;
 
-    std::vector<libchess::Move> moves = pos.legal_captures();
-    for (libchess::Move move : moves)
+    /*int nullMoveScore = 0;
+    if (tryNullMove(pos, depth, alpha, beta, nullMoveAllowed, nullMoveScore, true))
+    {
+        return nullMoveScore;
+    }*/
+
+    std::vector<libchess::Move> captures = pos.legal_captures();
+    orderMoves(captures, pos, 0);
+    //add checks to captures
+
+    for (libchess::Move move : captures)
     {
         if (move.type() == libchess::MoveType::ksc || move.type() == libchess::MoveType::qsc)
             continue;
         pos.makemove(move);
-        int score = -quiescenceSearch(pos, -beta, -alpha);
+        int score = -quiescenceSearch(pos, -beta, -alpha, true, depth - 1);
         pos.undomove();
         if (score >= beta)
         {
@@ -328,6 +354,7 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
     std::vector<int> moveScores(moves.size());
     libchess::Side opponent = (libchess::Side)(1 - (int)pos.turn());
 
+    //uint64_t hash = zobristHasher->calculateCustomZobristHash(pos);
     for (int i = 0; i < moves.size(); i++)
     {
         libchess::Move move = moves[i];
@@ -338,17 +365,17 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
         // if killer move, add 100000 to the move score guess
         if (killerMoves->find(std::pair<libchess::Move, int>(move, depth)) != killerMoves->end())
         {
-            moveScoreGuess += 100000;
+            moveScoreGuess += 10000;
             nKillerHits++;
         }
         if (moveIsCheck(pos, move))
         {
-            moveScoreGuess += 10000;
+            moveScoreGuess += 1000;
         }
         // if the move is a capture, add the value of the captured piece to the move score guess
         if (move.is_capturing())
         {
-            moveScoreGuess += 10 * pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
+            moveScoreGuess += 2 * pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
         }
 
         // if the move is a promotion, add the value of the promoted piece to the move score guess
@@ -422,21 +449,8 @@ bool ScarlettCore::futilityPrune(libchess::Position &pos, libchess::Move &move, 
     }
     return false;
 }
-bool ScarlettCore::checkTranspositionTable(libchess::Position &pos, int depth, int &score)
-{
-    if (transpositionTable->find(pos.hash()) != transpositionTable->end())
-    {
-        std::pair<int, int> scoreAndDepth = transpositionTable->at(pos.hash());
-        if (scoreAndDepth.second >= depth)
-        {
-            nCutoffs++;
-            score = scoreAndDepth.first;
-            return true;
-        }
-    }
-    return false;
-}
-bool ScarlettCore::tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score)
+
+bool ScarlettCore::tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent)
 {
     // color to move
     libchess::Side side = pos.turn();
@@ -453,7 +467,9 @@ bool ScarlettCore::tryNullMove(libchess::Position &pos, int depth, int alpha, in
         {
             return false;
         }
-        int tryScore = nullMoveSearch(pos, depth, alpha, beta);
+        int tryScore = nullMoveSearch(pos, depth, alpha, beta, quiescent);
+        
+        
         if (tryScore >= beta)
         {
             score = tryScore;
@@ -492,21 +508,46 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
         return DRAW_OR_STALEMATE_CONSTANT;
     }
 
-    int transpositionScore; // TODO : look if draw
-    if (checkTranspositionTable(pos, depth, transpositionScore))
-    {
-        return transpositionScore;
-    }
+    #if USE_TRANSPOSITION_TABLE
+        TTEntry entry;
+        uint64_t hash = pos.hash();
+        if(transpositionTable->tryGetEntry(hash, entry)){
+            if(entry.depth >= depth){
+                if(entry.type == EntryType::EXACT){
+                    return entry.score;
+                }
+                else if(entry.type == EntryType::ALPHA){
+                    if(entry.score > alpha){
+                        alpha = entry.score;
+                    }
+                }
+                else if(entry.type == EntryType::BETA){
+                    if(entry.score < beta){
+                        beta = entry.score;
+                    }
+                }
+            }
+            if (alpha >= beta)
+            {
+                return alpha;
+            }
+
+        }
+    #endif
 
     // If search ended, evaluate position
     if (depth <= 0)
     {
-        int score = evaluate(pos);
-        return score;
+        //int score = quiescenceSearch(pos, alpha, beta, nullMoveAllowed, QUIESCENCE_DEPTH);
+
+        #if USE_TRANSPOSITION_TABLE
+            transpositionTable->addEntry(pos.hash(), score, depth, EntryType::EXACT);
+        #endif
+        return evaluate(pos, beta);
     }
 
     int nullMoveScore = 0;
-    if (tryNullMove(pos, depth, alpha, beta, nullMoveAllowed, nullMoveScore))
+    if (tryNullMove(pos, depth, alpha, beta, nullMoveAllowed, nullMoveScore, false))
     {
         return nullMoveScore;
     }
@@ -515,7 +556,7 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     int checkmateOrStalemateScore;
     if (checkStaleMateOrCheckmateFromMoves(pos, moves, checkmateOrStalemateScore))
     {
-        return checkmateOrStalemateScore;
+        return checkmateOrStalemateScore * depth;
     }
 
 #if DEBUG
@@ -529,12 +570,6 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
 
     orderMoves(moves, pos, depth);
 
-    if (multicutPruning(pos, moves, depth, beta, true))
-    {
-        nCutoffs++;
-        return beta;
-    }
-
 #if DEBUG
     std::cout << "ORDERERD MOVES: ";
     for (libchess::Move move : moves)
@@ -543,39 +578,36 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     }
     std::cout << std::endl;
 #endif
-
+    EntryType entryType = EntryType::ALPHA;
+    int b = beta;
     int score;
-    if (depth <= FUTILITY_DEPTH)
-    {
-        score = evaluate(pos);
-    }
-
+    bool first = true;
     for (libchess::Move move : moves)
-    {
-        if (depth <= FUTILITY_DEPTH && futilityPrune(pos, move, depth, alpha, score))
-        {
-            continue;
-        }
-
+    {  
+        
         pos.makemove(move);
-        int score = -search(pos, depth - 1, -beta, -alpha, true);
+        score = -search(pos, depth - 1, -b, -alpha, true);
+        if(score > alpha && score < beta && !first){
+            score = -search(pos, depth - 1, -beta, -alpha, true);
+        }
         pos.undomove();
-        if (score >= beta) // The enemy can force a score of beta or higher so it won't go down this path
-        {
+        alpha = std::max(alpha, score);
+        if(alpha >= beta){
             nCutoffs++;
             killerMoves->insert(std::pair<libchess::Move, int>(move, depth));
-            return score;
+            entryType = EntryType::BETA;
+            break;
         }
-        if (score > alpha) // Found a new reachable best score
-        {
-            alpha = score;
-        }
+        b = alpha + 1;
+        first = false;
+        
     }
-
-    transpositionTable->insert(std::pair<uint64_t, std::pair<int, int>>(pos.hash(), std::pair<int, int>(alpha, depth)));
+    #if USE_TRANSPOSITION_TABLE
+        transpositionTable->addEntry(hash, alpha, depth, entryType);
+    #endif
     return alpha;
 }
-int ScarlettCore::evaluate(libchess::Position &pos)
+int ScarlettCore::evaluate(libchess::Position &pos, int beta)
 {
     int score = 0;
     std::vector<libchess::Move> moves;
@@ -596,7 +628,6 @@ int ScarlettCore::evaluate(libchess::Position &pos)
 
     libchess::Bitboard whitePawns = pos.pieces(libchess::Side::White, libchess::Piece::Pawn);
     libchess::Bitboard blackPawns = pos.pieces(libchess::Side::Black, libchess::Piece::Pawn);
-    ;
 
     libchess::Bitboard whiteKnights = pos.pieces(libchess::Side::White, libchess::Piece::Knight);
     libchess::Bitboard blackKnights = pos.pieces(libchess::Side::Black, libchess::Piece::Knight);
@@ -625,8 +656,11 @@ int ScarlettCore::evaluate(libchess::Position &pos)
     score += whiteQueens.count() * QUEEN_VALUE;
     score -= blackQueens.count() * QUEEN_VALUE;
 
+
     int whiteSemiOpenFiles = 0;
     libchess::Bitboard whiteSemiOpenFilesBitboard;
+    int blackSemiOpenFiles = 0;
+    libchess::Bitboard blackSemiOpenFilesBitboard;
     for (const auto &file : libchess::bitboards::files)
     {
         if ((whitePawns & file).empty())
@@ -634,21 +668,13 @@ int ScarlettCore::evaluate(libchess::Position &pos)
             whiteSemiOpenFiles++;
             whiteSemiOpenFilesBitboard |= file;
         }
-    }
 
-    // set of black semi open files
-    int blackSemiOpenFiles = 0;
-    libchess::Bitboard blackSemiOpenFilesBitboard;
-
-    for (const auto &file : libchess::bitboards::files)
-    {
         if ((blackPawns & file).empty())
         {
             blackSemiOpenFiles++;
             blackSemiOpenFilesBitboard |= file;
         }
     }
-
     // open files
     libchess::Bitboard openFilesBitboard = whiteSemiOpenFilesBitboard & blackSemiOpenFilesBitboard;
     // doubled paws = nbpawns - 8 + nbsemiopenfiles
@@ -661,6 +687,7 @@ int ScarlettCore::evaluate(libchess::Position &pos)
     score -= (whitePawns & whiteSemiOpenFilesBitboard.west() & whiteSemiOpenFilesBitboard.east()).count() * ISOLATED_PAWN_PENALTY;
     score += (blackPawns & blackSemiOpenFilesBitboard.west() & blackSemiOpenFilesBitboard.east()).count() * ISOLATED_PAWN_PENALTY;
 
+
     // bishop pair
     if (whiteBishops.count() >= 2)
     {
@@ -671,13 +698,19 @@ int ScarlettCore::evaluate(libchess::Position &pos)
         score -= BISHOP_PAIR;
     }
 
+    libchess::Bitboard whiteRooksOnOpenFile = whiteRooks & openFilesBitboard;
+    libchess::Bitboard blackRooksOnOpenFile = blackRooks & openFilesBitboard;
+
+    libchess::Bitboard whiteRooksOnSemiOpenFile = whiteRooks & whiteSemiOpenFilesBitboard;
+    libchess::Bitboard blackRooksOnSemiOpenFile = blackRooks & blackSemiOpenFilesBitboard;
+
     // rook on open file
-    score += (whiteRooks & openFilesBitboard).count() * ROOK_OPEN_FILE;
-    score -= (blackRooks & openFilesBitboard).count() * ROOK_OPEN_FILE;
+    score += whiteRooksOnOpenFile.count() * ROOK_OPEN_FILE;
+    score -= blackRooksOnOpenFile.count() * ROOK_OPEN_FILE;
 
     // rook on semi open file
-    score += (whiteRooks & whiteSemiOpenFilesBitboard).count() * ROOK_SEMI_OPEN_FILE;
-    score -= (blackRooks & blackSemiOpenFilesBitboard).count() * ROOK_SEMI_OPEN_FILE;
+    score += whiteRooksOnSemiOpenFile.count() * ROOK_SEMI_OPEN_FILE;
+    score -= blackRooksOnSemiOpenFile.count() * ROOK_SEMI_OPEN_FILE;
 
     // king file
     libchess::Square whiteKingSquare = pos.king_position(libchess::Side::White);
@@ -687,15 +720,16 @@ int ScarlettCore::evaluate(libchess::Position &pos)
     libchess::Bitboard blackKingFile = libchess::bitboards::files[blackKingSquare.file()];
 
     // rook on king file
-    score += (whiteRooks & blackKingFile).count() * ROOK_ATTACK_KING_FILE;
-    score -= (blackRooks & whiteKingFile).count() * ROOK_ATTACK_KING_FILE;
+    score += (blackKingFile & whiteRooksOnSemiOpenFile).count() * ROOK_ATTACK_KING_FILE;
+    score -= (whiteKingFile & blackRooksOnSemiOpenFile).count() * ROOK_ATTACK_KING_FILE;
 
+    
     // rook attack king adjacent file
-    score += (whiteRooks & blackKingFile.west()).count() * ROOK_ATTACK_KING_ADJ_FILE;
-    score -= (blackRooks & whiteKingFile.west()).count() * ROOK_ATTACK_KING_ADJ_FILE;
+    score += (whiteRooksOnOpenFile & blackKingFile.west()).count() * ROOK_ATTACK_KING_ADJ_FILE;
+    score -= (blackRooksOnOpenFile & whiteKingFile.west()).count() * ROOK_ATTACK_KING_ADJ_FILE;
 
-    score += (whiteRooks & blackKingFile.east()).count() * ROOK_ATTACK_KING_ADJ_FILE;
-    score -= (blackRooks & whiteKingFile.east()).count() * ROOK_ATTACK_KING_ADJ_FILE;
+    score += (whiteRooksOnOpenFile & blackKingFile.east()).count() * ROOK_ATTACK_KING_ADJ_FILE;
+    score -= (blackRooksOnOpenFile & whiteKingFile.east()).count() * ROOK_ATTACK_KING_ADJ_FILE;
 
     // rook on 7th rank
     score += (whiteRooks & libchess::bitboards::Rank7).count() * ROOK_7TH_RANK;
@@ -704,33 +738,36 @@ int ScarlettCore::evaluate(libchess::Position &pos)
     // king protection
     libchess::Bitboard whiteKingMask = libchess::movegen::king_moves(whiteKingSquare);
     libchess::Bitboard blackKingMask = libchess::movegen::king_moves(blackKingSquare);
-
+ 
+    libchess::Bitboard blackSquaresAttacked = pos.squares_attacked(libchess::Side::Black);
+    libchess::Bitboard whiteSquaresAttacked = pos.squares_attacked(libchess::Side::White);
+    
     for (const auto &fr : whiteBishops)
     {
-        libchess::Bitboard bishopMask = libchess::movegen::bishop_moves(fr, pos.occupied()) & ~pos.squares_attacked(libchess::Side::Black);
+        libchess::Bitboard bishopMask = libchess::movegen::bishop_moves(fr, pos.occupied()) & ~blackSquaresAttacked;
         score += bishopMask.count() * BISHOP_MOBILITY;
     }
     for (const auto &fr : blackBishops)
     {
-        libchess::Bitboard bishopMask = libchess::movegen::bishop_moves(fr, pos.occupied()) & ~pos.squares_attacked(libchess::Side::White);
+        libchess::Bitboard bishopMask = libchess::movegen::bishop_moves(fr, pos.occupied()) & ~whiteSquaresAttacked;
         score -= bishopMask.count() * BISHOP_MOBILITY;
     }
 
     for (const auto &fr : whiteQueens)
     {
-        libchess::Bitboard queenMask = libchess::movegen::queen_moves(fr, pos.occupied()) & ~pos.squares_attacked(libchess::Side::Black);
+        libchess::Bitboard queenMask = libchess::movegen::queen_moves(fr, pos.occupied()) & ~blackSquaresAttacked;
         score += queenMask.count() * QUEEN_MOBILITY;
     }
     for (const auto &fr : blackQueens)
     {
-        libchess::Bitboard queenMask = libchess::movegen::queen_moves(fr, pos.occupied()) & ~pos.squares_attacked(libchess::Side::White);
+        libchess::Bitboard queenMask = libchess::movegen::queen_moves(fr, pos.occupied()) & ~whiteSquaresAttacked;
         score -= queenMask.count() * QUEEN_MOBILITY;
     }
 
     for (const auto &fr : whiteRooks)
     {
         libchess::Bitboard rookMoves = libchess::movegen::rook_moves(fr, pos.occupied());
-        libchess::Bitboard rookMask = rookMoves & ~pos.squares_attacked(libchess::Side::Black);
+        libchess::Bitboard rookMask = rookMoves & ~blackSquaresAttacked;
         score += rookMask.count() * ROOK_MOBILITY;
 
         // intersection of rook moves and rook bitboard
@@ -740,7 +777,7 @@ int ScarlettCore::evaluate(libchess::Position &pos)
     for (const auto &fr : blackRooks)
     {
         libchess::Bitboard rookMoves = libchess::movegen::rook_moves(fr, pos.occupied());
-        libchess::Bitboard rookMask = rookMoves & ~pos.squares_attacked(libchess::Side::White);
+        libchess::Bitboard rookMask = rookMoves & ~whiteSquaresAttacked;
         score -= rookMask.count() * ROOK_MOBILITY;
 
         // intersection of rook moves and rook bitboard
@@ -750,35 +787,35 @@ int ScarlettCore::evaluate(libchess::Position &pos)
 
     for (const auto &fr : whiteKnights)
     {
-        libchess::Bitboard knightMask = libchess::movegen::knight_moves(fr) & ~pos.squares_attacked(libchess::Side::Black);
+        libchess::Bitboard knightMask = libchess::movegen::knight_moves(fr) & ~blackSquaresAttacked;
         score += knightMask.count() * KNIGHT_MOBILITY;
     }
 
     for (const auto &fr : blackKnights)
     {
-        libchess::Bitboard knightMask = libchess::movegen::knight_moves(fr) & ~pos.squares_attacked(libchess::Side::White);
+        libchess::Bitboard knightMask = libchess::movegen::knight_moves(fr) & ~whiteSquaresAttacked;
         score -= knightMask.count() * KNIGHT_MOBILITY;
     }
 
     // central pawns
-    score += (whitePawns & libchess::Bitboard(0x0000001818000000)).count() * 20;
-    score -= (blackPawns & libchess::Bitboard(0x0000001818000000)).count() * 20;
+    score += (whitePawns & centralSquares).count() * 20;
+    score -= (blackPawns & extendedCenterSquares).count() * 20;
 
     // extended center pawns
-    score += (whitePawns & libchess::Bitboard(0x00003c3c3c3c0000)).count() * 10;
-    score -= (blackPawns & libchess::Bitboard(0x00003c3c3c3c0000)).count() * 10;
+    score += (whitePawns & centralSquares).count() * 10;
+    score -= (blackPawns & extendedCenterSquares).count() * 10;
     // king safety
-    if (pos.king_position(libchess::Side::White) == libchess::squares::A1 || pos.king_position(libchess::Side::White) == libchess::squares::B1 || pos.king_position(libchess::Side::White) == libchess::squares::C1 || pos.king_position(libchess::Side::White) == libchess::squares::G1 || pos.king_position(libchess::Side::White) == libchess::squares::H1)
+    if (whiteKingSquare == libchess::squares::A1 || whiteKingSquare == libchess::squares::B1 || whiteKingSquare == libchess::squares::C1 || whiteKingSquare == libchess::squares::G1 || whiteKingSquare == libchess::squares::H1)
     {
         score += 100;
     }
-    if (pos.king_position(libchess::Side::Black) == libchess::squares::A8 || pos.king_position(libchess::Side::Black) == libchess::squares::B8 || pos.king_position(libchess::Side::Black) == libchess::squares::C8 || pos.king_position(libchess::Side::Black) == libchess::squares::G8 || pos.king_position(libchess::Side::Black) == libchess::squares::H8)
+    if (blackKingSquare == libchess::squares::A8 || blackKingSquare == libchess::squares::B8 || blackKingSquare == libchess::squares::C8 || blackKingSquare == libchess::squares::G8 || blackKingSquare == libchess::squares::H8)
     {
         score -= 100;
     }
 
-    score += KING_FRIENDLY_PAWNS * (whitePawns & libchess::movegen::king_moves(pos.king_position(libchess::Side::White))).count();
-    score -= KING_FRIENDLY_PAWNS * (blackPawns & libchess::movegen::king_moves(pos.king_position(libchess::Side::Black))).count();
+    score += KING_FRIENDLY_PAWNS * (whitePawns & libchess::movegen::king_moves(whiteKingSquare)).count();
+    score -= KING_FRIENDLY_PAWNS * (blackPawns & libchess::movegen::king_moves(blackKingSquare)).count();
 
     // castling rights
     if (pos.can_castle(libchess::Side::White, libchess::MoveType::ksc))

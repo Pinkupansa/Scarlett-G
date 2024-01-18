@@ -11,6 +11,9 @@
 #include <map>
 #include "player.hpp"
 
+#include "opening_book.hpp"
+#include "transposition_table.hpp"
+
 struct MoveHash
 {
     std::size_t operator()(const libchess::Move &move) const
@@ -39,9 +42,9 @@ public:
     ScarlettCore(int color, int depth);
     ~ScarlettCore();
     libchess::Move getMove(libchess::Position pos);
-    int evaluate(libchess::Position &pos);
+    int evaluate(libchess::Position &pos, int beta);
     int search(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed);
-    int quiescenceSearch(libchess::Position &pos, int alpha, int beta);
+    
     void setWeights(int weights[20]);
     void setPieceValues(int pieceValues[6]);
     void printWeights();
@@ -90,6 +93,7 @@ public:
     int MC_NUM = 10;
     int MC_CUT = 3;
 
+    int QUIESCENCE_DEPTH = 4;
     int color;
 
 private:
@@ -98,23 +102,29 @@ private:
     int nCutoffs;
     int nKillerHits;
     clock_t timeSpentSorting;
+    const libchess::Bitboard centralSquares = libchess::Bitboard(0x0000001818000000);
+    const libchess::Bitboard extendedCenterSquares = libchess::Bitboard(0x00003c3c3c3c0000);
     // transposition table
-    std::map<uint64_t, std::pair<int, int>> *transpositionTable;
+    TranspositionTable* transpositionTable;
+    std::map<uint64_t, libchess::Move> *principalVariationTable;
 
     // killer moves hashset
     std::unordered_set<std::pair<libchess::Move, int>, pair_hash> *killerMoves;
 
-    int nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta);
+    OpeningBook *openingBook;
+    PositionHasher *zobristHasher;
+
+    int nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent);
     bool futilityPrune(libchess::Position &pos, libchess::Move &move, int depth, int alpha, int posScore);
     void orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth);
     bool isTactical(libchess::Position &pos, libchess::Move &move);
     bool multicutPruning(libchess::Position &pos, std::vector<libchess::Move> &moves, int depth, int beta, bool nullMoveAllowed);
     int pieceValues[6];
-    bool checkTranspositionTable(libchess::Position &pos, int depth, int &score);
-    bool tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score);
+    bool tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent);
     bool moveIsCheck(libchess::Position &pos, libchess::Move &move);
     void reinitKillerMoves();
     bool checkStaleMateOrCheckmateFromMoves(libchess::Position &pos, std::vector<libchess::Move> &legalMoves, int &score);
+    int quiescenceSearch(libchess::Position &pos, int alpha, int beta, bool nullMoveAllowed, int depth);
 };
 
 #endif // SIMPLE_MMAB_HPP

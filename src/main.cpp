@@ -7,10 +7,12 @@
 #include "human_player.hpp"
 #include "scarlett_core.hpp"
 #include "scarlett_trainer.hpp"
+#include <random>
 
 int main(int argc, char *argv[])
 {
-
+    //seed random
+    srand(time(NULL));
     if (argc == 2)
     {
         if (strcmp(argv[1], "train") == 0)
@@ -31,14 +33,12 @@ int main(int argc, char *argv[])
     Player *player2;
     Player *currentPlayer;
 
-    ScarlettCore *evaluator = new ScarlettCore(1, 5);
-
     if (argc >= 3)
     {
         if (strcmp(argv[1], "ai") == 0)
         {
 
-            player1 = new ScarlettCore(1, 6);
+            player1 = new ScarlettCore(1, 8);
         }
         if (strcmp(argv[1], "human") == 0)
         {
@@ -48,7 +48,7 @@ int main(int argc, char *argv[])
         if (strcmp(argv[2], "ai") == 0)
         {
 
-            player2 = new ScarlettCore(1, 6);
+            player2 = new ScarlettCore(1, 8);
         }
         if (strcmp(argv[2], "human") == 0)
         {
@@ -56,7 +56,6 @@ int main(int argc, char *argv[])
             player2 = new HumanPlayer();
         }
     }
-    evaluator = new ScarlettCore(1, 1);
     libchess::Position pos;
     if (argc >= 4)
     {
@@ -72,10 +71,10 @@ int main(int argc, char *argv[])
     }
     else
     {
-        pos.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        pos.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -");
     }
+
     std::cout << pos;
-    ((ScarlettCore *)evaluator)->printWeights();
     while (true)
     {
 
@@ -90,10 +89,9 @@ int main(int argc, char *argv[])
         libchess::Move move = currentPlayer->getMove(pos);
         pos.makemove(move);
 
-        // int score = evaluator->evaluate(cr);
-        // std::cout << "Score without calculation: " << score << std::endl;
-        std::cout << pos;
-        std::cout << "Evaluation : " << evaluator->evaluate(pos) * (1 - 2 * (int)pos.turn()) << std::endl;
+        std::cout << pos << std::endl;
+        std::cout << pos.get_fen() << std::endl;
+    
         if (pos.is_checkmate())
         {
             std::cout << "Checkmate!" << std::endl;
@@ -121,6 +119,5 @@ int main(int argc, char *argv[])
 
     delete player1;
     delete player2;
-    delete evaluator;
     return 0;
 }

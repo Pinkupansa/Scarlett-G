@@ -1,1 +1,3 @@
 r3r3/pbp2k2/1p1b1N1p/1Pn2pp1/P2Qp2q/B1N1P3/3P1PB1/R4RK1 w - - 6 27 d4d6
+r1bqk2r/1ppp1ppp/p1n5/4p3/Q1P1n3/2P2N2/P2P1PPP/R1B1KB1R w KQkq - 0 8 c4c5 depth 8
+r1bqkb1r/6pp/p1n1pp2/1p1n4/1pBP4/5NP1/PBP1QP1P/RN2K2R w KQkq b6 0 10 c4b5 depth 8

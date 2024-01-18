@@ -15,3 +15,4 @@ target_link_libraries(${PROJECT_NAME} EAL)
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 target_include_directories(${PROJECT_NAME} PRIVATE libchess/src/libchess)
 
+set(CMAKE_CXX_FLAGS "-O3 -fopenmp")
