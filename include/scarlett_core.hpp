@@ -13,6 +13,7 @@
 
 #include "opening_book.hpp"
 #include "transposition_table.hpp"
+#include "pv_table.hpp"
 
 struct MoveHash
 {
@@ -106,7 +107,7 @@ private:
     const libchess::Bitboard extendedCenterSquares = libchess::Bitboard(0x00003c3c3c3c0000);
     // transposition table
     TranspositionTable* transpositionTable;
-    std::map<uint64_t, libchess::Move> *principalVariationTable;
+    PVTable* pvTable;
 
     // killer moves hashset
     std::unordered_set<std::pair<libchess::Move, int>, pair_hash> *killerMoves;
@@ -116,7 +117,7 @@ private:
 
     int nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent);
     bool futilityPrune(libchess::Position &pos, libchess::Move &move, int depth, int alpha, int posScore);
-    void orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth);
+    void orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth, uint64_t hash);
     bool isTactical(libchess::Position &pos, libchess::Move &move);
     bool multicutPruning(libchess::Position &pos, std::vector<libchess::Move> &moves, int depth, int beta, bool nullMoveAllowed);
     int pieceValues[6];

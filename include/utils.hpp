@@ -15,8 +15,6 @@ class PositionHasher
         uint64_t zobristBlackToMove;
         uint64_t zobristCastling[16];
         uint64_t zobristEnPassant[64];
-
-
     public: 
 
         PositionHasher(){
@@ -70,7 +68,8 @@ class PositionHasher
             int epIndex = pos.ep().rank() * 8 + pos.ep().file();
             if(epIndex == 255) return hash;
             hash ^= zobristEnPassant[epIndex];
-           
+
+            hash ^= pos.halfmoves();
 
             return hash;
         }

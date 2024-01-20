@@ -14,8 +14,9 @@
 #define BEST_POSSIBLE_SCORE 100000000
 #define DRAW_OR_STALEMATE_CONSTANT 0
 #define USE_BOOK 0
-#define USE_TRANSPOSITION_TABLE 0
+#define USE_TRANSPOSITION_TABLE 1
 #define LAZY_EVAL_MARGIN 200
+#define MAX_SECONDS 1
 ScarlettCore::ScarlettCore(int color, int depth)
 {
     this->color = color;
@@ -23,7 +24,7 @@ ScarlettCore::ScarlettCore(int color, int depth)
 
     
     this->transpositionTable = new TranspositionTable();
-    this->principalVariationTable = new std::map<uint64_t, libchess::Move>();
+    this->pvTable = new PVTable();
     this->zobristHasher = new PositionHasher();
     this->openingBook = new OpeningBook("../resources/opening_book.txt", zobristHasher);
 
@@ -167,7 +168,7 @@ ScarlettCore::~ScarlettCore()
     delete this->transpositionTable;
     delete this->killerMoves;
     delete this->openingBook;
-    delete this->principalVariationTable;
+    delete this->pvTable;
     delete this->zobristHasher;
 }
 
@@ -191,7 +192,7 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     std::cout << std::endl;
 #endif
 
-    orderMoves(moves, pos, depth);
+    orderMoves(moves, pos, depth, pos.hash());
 
 #if DEBUG
     std::cout << std::endl
@@ -207,44 +208,64 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     double duration;
     start = clock();
     int bestScore = 0;
+    int currentDepth = 1;
     if(!(openingBook->tryGetMove(pos, bestMove) and USE_BOOK)){
-        bestScore = -BEST_POSSIBLE_SCORE;
 
-        for (libchess::Move move : moves)
-        {
-    #if DEBUG
-            std::cout << "TEST MOVE : " << move << std::endl;
-    #endif
-            pos.makemove(move);
-    #if DEBUG
-            std::cout << pos << std::endl;
-    #endif
-            int score = -search(pos, depth - 1, -BEST_POSSIBLE_SCORE, -bestScore, true);
-            pos.undomove();
-            if (score > bestScore)
+        while (true){
+
+            libchess::Move bestMoveInIteration;
+            int bestScoreInIteration = -BEST_POSSIBLE_SCORE;
+            for (libchess::Move move : moves)
             {
-                // std::cout << "Score: " << (2 * (1 - color) - 1) * score << std::endl;
-                bestScore = score;
-                bestMove = move;
+        #if DEBUG
+                std::cout << "TEST MOVE : " << move << std::endl;
+        #endif
+                pos.makemove(move);
+        #if DEBUG
+                std::cout << pos << std::endl;
+        #endif
+                int score = -search(pos, currentDepth - 1, -BEST_POSSIBLE_SCORE, -bestScoreInIteration, true);
+                pos.undomove();
+                if (score > bestScoreInIteration)
+                {
+                    // std::cout << "Score: " << (2 * (1 - color) - 1) * score << std::endl;
+                    bestScoreInIteration = score;
+                    bestMoveInIteration = move;
+                }
+
+                if((clock() - start) / (double)CLOCKS_PER_SEC > MAX_SECONDS){
+                    break;
+                }
             }
+            if((clock() - start) / (double)CLOCKS_PER_SEC > MAX_SECONDS){
+                    break;
+            }
+            currentDepth++;
+            bestMove = bestMoveInIteration;
+            bestScore = bestScoreInIteration;
+            pvTable->addEntry(pos.hash(), bestMove, currentDepth);
+            transpositionTable->addEntry(pos.hash(), currentDepth, bestScore, EntryType::EXACT);
         }
     }
-    transpositionTable->addEntry(pos.hash(), bestScore, depth, EntryType::EXACT);
     //principalVariationTable->insert(std::pair<uint64_t, libchess::Move>(pos.hash(), bestMove));
     
 #if USAGE_MODE
     duration = (clock() - start) / (double)CLOCKS_PER_SEC;
+    
     std::cout << std::endl;
     std::cout << "Time: " << duration << std::endl;
     // write best move in
     std::cout << "\033[1;31mBEST MOVE: "
               << bestMove << " " << color * bestScore / 100.0 << "\033[0m" << std::endl;
+    //print search depth in green
+    std::cout << "\033[1;32mDepth: " << currentDepth << "\033[0m" << std::endl;
     // nodesSearched
     std::cout << "Nodes searched: " << nodesSearched << std::endl;
     std::cout << "Cutoffs: " << nCutoffs << std::endl;
     // std::cout << "Time spent sorting: " << timeSpentSorting / (double)CLOCKS_PER_SEC << std::endl;
     std::cout << "Killer hits: " << nKillerHits << std::endl;
     std::cout << "Number of killer moves: " << killerMoves->size() << std::endl;
+   
 
 #endif
 
@@ -303,7 +324,7 @@ int ScarlettCore::quiescenceSearch(libchess::Position &pos, int alpha, int beta,
     }*/
 
     std::vector<libchess::Move> captures = pos.legal_captures();
-    orderMoves(captures, pos, 0);
+    orderMoves(captures, pos, 0, pos.hash());
     //add checks to captures
 
     for (libchess::Move move : captures)
@@ -349,18 +370,24 @@ bool ScarlettCore::isTactical(libchess::Position &pos, libchess::Move &move)
     return false;
 }
 
-void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth)
+void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth, uint64_t hash)
 {
     std::vector<int> moveScores(moves.size());
     libchess::Side opponent = (libchess::Side)(1 - (int)pos.turn());
 
-    //uint64_t hash = zobristHasher->calculateCustomZobristHash(pos);
+    PVEntry entry;
+    bool pvMoveFound = pvTable->tryGetEntry(hash, entry);
+
     for (int i = 0; i < moves.size(); i++)
     {
         libchess::Move move = moves[i];
         int moveScoreGuess = 0;
         libchess::Piece movePieceType = pos.piece_on(move.from());
         libchess::Piece capturePieceType = pos.piece_on(move.to());
+
+        if(pvMoveFound && move == entry.pvMove){
+            moveScoreGuess += 20000;
+        }
 
         // if killer move, add 100000 to the move score guess
         if (killerMoves->find(std::pair<libchess::Move, int>(move, depth)) != killerMoves->end())
@@ -507,24 +534,32 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     {
         return DRAW_OR_STALEMATE_CONSTANT;
     }
-
+    uint64_t hash = pos.hash();
     #if USE_TRANSPOSITION_TABLE
         TTEntry entry;
-        uint64_t hash = pos.hash();
+        
         if(transpositionTable->tryGetEntry(hash, entry)){
             if(entry.depth >= depth){
-                if(entry.type == EntryType::EXACT){
-                    return entry.score;
-                }
-                else if(entry.type == EntryType::ALPHA){
-                    if(entry.score > alpha){
-                        alpha = entry.score;
-                    }
-                }
-                else if(entry.type == EntryType::BETA){
-                    if(entry.score < beta){
-                        beta = entry.score;
-                    }
+                switch (entry.type)
+                {
+                    case EntryType::EXACT:
+                        return entry.score;
+                        break;
+                    
+                    case EntryType::LOWERBOUND:
+                        if(entry.score > alpha){
+                            alpha = entry.score;
+                        }
+                        break;
+                    
+                    case EntryType::UPPERBOUND:
+                        if(entry.score < beta){
+                            beta = entry.score;
+                        }
+                        break;
+                    
+                    default:
+                        break;
                 }
             }
             if (alpha >= beta)
@@ -538,12 +573,12 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     // If search ended, evaluate position
     if (depth <= 0)
     {
-        //int score = quiescenceSearch(pos, alpha, beta, nullMoveAllowed, QUIESCENCE_DEPTH);
+        int score = evaluate(pos, beta);
 
         #if USE_TRANSPOSITION_TABLE
-            transpositionTable->addEntry(pos.hash(), score, depth, EntryType::EXACT);
+           transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
         #endif
-        return evaluate(pos, beta);
+        return score;
     }
 
     int nullMoveScore = 0;
@@ -556,7 +591,11 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     int checkmateOrStalemateScore;
     if (checkStaleMateOrCheckmateFromMoves(pos, moves, checkmateOrStalemateScore))
     {
-        return checkmateOrStalemateScore * depth;
+        int score = checkmateOrStalemateScore * depth;
+        #if USE_TRANSPOSITION_TABLE
+            transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
+        #endif
+        return score;
     }
 
 #if DEBUG
@@ -568,7 +607,7 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     std::cout << std::endl;
 #endif
 
-    orderMoves(moves, pos, depth);
+    orderMoves(moves, pos, depth, hash);
 
 #if DEBUG
     std::cout << "ORDERERD MOVES: ";
@@ -578,10 +617,11 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     }
     std::cout << std::endl;
 #endif
-    EntryType entryType = EntryType::ALPHA;
     int b = beta;
     int score;
     bool first = true;
+    int originalAlpha = alpha;
+    libchess::Move bestMove = moves[0];
     for (libchess::Move move : moves)
     {  
         
@@ -591,19 +631,42 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
             score = -search(pos, depth - 1, -beta, -alpha, true);
         }
         pos.undomove();
-        alpha = std::max(alpha, score);
+        if(score > alpha){
+            alpha = score;
+            bestMove = move;
+        }
         if(alpha >= beta){
             nCutoffs++;
             killerMoves->insert(std::pair<libchess::Move, int>(move, depth));
-            entryType = EntryType::BETA;
+            #if USE_TRANSPOSITION_TABLE
+                transpositionTable->addEntry(hash, depth, alpha, EntryType::LOWERBOUND);
+            #endif
+            return alpha;
             break;
         }
         b = alpha + 1;
         first = false;
         
     }
+    if(score > originalAlpha){
+        pvTable->addEntry(hash, bestMove, depth);
+    }
     #if USE_TRANSPOSITION_TABLE
-        transpositionTable->addEntry(hash, alpha, depth, entryType);
+        EntryType entryType;
+
+        if (alpha <= originalAlpha)
+        {
+            entryType = EntryType::UPPERBOUND;
+        }
+        else
+        {
+            entryType = EntryType::EXACT;
+        }
+        
+        transpositionTable->addEntry(hash, depth, alpha, entryType);
+        
+        
+        
     #endif
     return alpha;
 }
