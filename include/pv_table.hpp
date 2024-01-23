@@ -1,7 +1,7 @@
 #ifndef PV_TABLE_HPP
 #define PV_TABLE_HPP
 
-#include <unordered_map>
+#include "hashmap.hpp"
 #include <cstdint>
 #include "position.hpp"
 
@@ -14,11 +14,8 @@ class PVEntry
 
 class PVTable{
     private:
-        std::unordered_map<uint64_t, PVEntry> table;
+        __gnu_pbds::gp_hash_table<uint64_t, PVEntry, chash> table;
     public:
-        PVTable(){
-            table = std::unordered_map<uint64_t, PVEntry>();
-        }
         void addEntry(uint64_t hash, libchess::Move move, int depth){
             if(table.find(hash) != table.end()){
                 if(table[hash].depth > depth){

@@ -10,7 +10,7 @@
 // include hash map
 #include <map>
 #include "player.hpp"
-
+#include "hashmap.hpp"
 #include "opening_book.hpp"
 #include "transposition_table.hpp"
 #include "pv_table.hpp"
@@ -21,7 +21,8 @@ struct MoveHash
     {
         std::size_t h1 = move.from().file() + 8 * move.from().rank();
         std::size_t h2 = move.to().file() + 8 * move.to().rank();
-        return h1 ^ h2;
+        std::size_t h3 = (int)move.piece();
+        return h1 ^ h2 ^ h3;
     }
 };
 
@@ -43,7 +44,7 @@ public:
     ScarlettCore(int color, int depth);
     ~ScarlettCore();
     libchess::Move getMove(libchess::Position pos);
-    int evaluate(libchess::Position &pos, int beta);
+    int evaluate(libchess::Position &pos, int alpha, int beta);
     int search(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed);
     
     void setWeights(int weights[20]);
@@ -97,11 +98,14 @@ public:
     int QUIESCENCE_DEPTH = 4;
     int color;
 
+    int LAZY_EVAL_MARGIN = 300;
+
 private:
     int depth;
     int nodesSearched;
     int nCutoffs;
     int nKillerHits;
+    int turn;
     clock_t timeSpentSorting;
     const libchess::Bitboard centralSquares = libchess::Bitboard(0x0000001818000000);
     const libchess::Bitboard extendedCenterSquares = libchess::Bitboard(0x00003c3c3c3c0000);
@@ -111,21 +115,25 @@ private:
 
     // killer moves hashset
     std::unordered_set<std::pair<libchess::Move, int>, pair_hash> *killerMoves;
+    std::unordered_map<libchess::Move, int, MoveHash> *historyMoves;
 
     OpeningBook *openingBook;
     PositionHasher *zobristHasher;
 
     int nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent);
-    bool futilityPrune(libchess::Position &pos, libchess::Move &move, int depth, int alpha, int posScore);
+    bool futilityPrune(const libchess::Position &pos, libchess::Move move, int depth, int alpha, int beta, int posScore);
     void orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth, uint64_t hash);
-    bool isTactical(libchess::Position &pos, libchess::Move &move);
-    bool multicutPruning(libchess::Position &pos, std::vector<libchess::Move> &moves, int depth, int beta, bool nullMoveAllowed);
+    bool isTactical(libchess::Position &pos, libchess::Move move);
     int pieceValues[6];
     bool tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent);
-    bool moveIsCheck(libchess::Position &pos, libchess::Move &move);
+    bool moveIsCheck(libchess::Position &pos, libchess::Move move);
     void reinitKillerMoves();
-    bool checkStaleMateOrCheckmateFromMoves(libchess::Position &pos, std::vector<libchess::Move> &legalMoves, int &score);
+    void reinitHistoryMoves();
+    void updateHistory(libchess::Move move, int depth);
+    bool checkStaleMateOrCheckmateFromMoves(const libchess::Position &pos, const std::vector<libchess::Move> &legalMoves, int &score);
     int quiescenceSearch(libchess::Position &pos, int alpha, int beta, bool nullMoveAllowed, int depth);
+    bool tryMultiCutPruning(libchess::Position &pos, const std::vector<libchess::Move> &moves, int depth, int beta);
+    int evaluateMaterialBalance(const libchess::Bitboard& whitePawns, const libchess::Bitboard& whiteKnights, const libchess::Bitboard& whiteBishops, const libchess::Bitboard& whiteRooks, const libchess::Bitboard& whiteQueens, const libchess::Bitboard& blackPawns, const libchess::Bitboard& blackKnights, const libchess::Bitboard& blackBishops, const libchess::Bitboard& blackRooks, const libchess::Bitboard& blackQueens);
 };
 
 #endif // SIMPLE_MMAB_HPP

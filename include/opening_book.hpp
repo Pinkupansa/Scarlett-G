@@ -33,7 +33,8 @@ class OpeningBook
             this->zobristHasher = zobristHasher;
             parseBook();
         }
-        bool tryGetMove(libchess::Position &pos, libchess::Move &move){
+        bool tryGetMove(libchess::Position &pos, libchess::Move &move, int turn){
+            double pow = (double)turn / 2.0;
             //gen pos fen
             uint64_t hash = zobristHasher->calculateShortFenHash(pos);
             //get moves
@@ -45,14 +46,14 @@ class OpeningBook
             int totalGames = 0;
             for (auto const& m : moves)
             {
-                totalGames += std::sqrt(m.numGames);
+                totalGames += std::pow(m.numGames, pow);
             }
             int randomNum = rand() % totalGames;
             int currentNum = 0;
             MoveData bestMove = moves[0];
             for (auto const& m : moves)
             {
-                currentNum += std::sqrt(m.numGames);
+                currentNum += std::pow(m.numGames, pow);
                 if(currentNum >= randomNum){
                     bestMove = m;
                     break;

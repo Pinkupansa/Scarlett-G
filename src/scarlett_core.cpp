@@ -15,8 +15,7 @@
 #define DRAW_OR_STALEMATE_CONSTANT 0
 #define USE_BOOK 0
 #define USE_TRANSPOSITION_TABLE 1
-#define LAZY_EVAL_MARGIN 200
-#define MAX_SECONDS 1
+#define MAX_SECONDS 3
 ScarlettCore::ScarlettCore(int color, int depth)
 {
     this->color = color;
@@ -74,14 +73,15 @@ ScarlettCore::ScarlettCore(int color, int depth)
     this->FUTILITY_MARGIN_2 = 650;
     this->FUTILITY_MARGIN_3 = 1200;
 
-    this->MULTICUT_REDUCTION = 3;
-    this->MULTICUT_DEPTH = 6;
+    this->MULTICUT_REDUCTION = 2;
+    this->MULTICUT_DEPTH = 2;
     this->MC_NUM = 10;
     this->MC_CUT = 3;
 
     this->QUIESCENCE_DEPTH = 0;
 
     killerMoves = new std::unordered_set<std::pair<libchess::Move, int>, pair_hash>();
+    historyMoves = new std::unordered_map<libchess::Move, int, MoveHash>();
 }
 
 void ScarlettCore::printWeights()
@@ -174,6 +174,7 @@ ScarlettCore::~ScarlettCore()
 
 libchess::Move ScarlettCore::getMove(libchess::Position pos)
 {
+    turn++;
     this->nodesSearched = 0;
     this->nCutoffs = 0;
     this->timeSpentSorting = 0;
@@ -209,7 +210,7 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     start = clock();
     int bestScore = 0;
     int currentDepth = 1;
-    if(!(openingBook->tryGetMove(pos, bestMove) and USE_BOOK)){
+    if(!(openingBook->tryGetMove(pos, bestMove, turn) and USE_BOOK)){
 
         while (true){
 
@@ -238,7 +239,8 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
                 }
             }
             if((clock() - start) / (double)CLOCKS_PER_SEC > MAX_SECONDS){
-                    break;
+                pvTable->addEntry(pos.hash(), bestMoveInIteration, currentDepth);
+                break;
             }
             currentDepth++;
             bestMove = bestMoveInIteration;
@@ -262,41 +264,13 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     // nodesSearched
     std::cout << "Nodes searched: " << nodesSearched << std::endl;
     std::cout << "Cutoffs: " << nCutoffs << std::endl;
-    // std::cout << "Time spent sorting: " << timeSpentSorting / (double)CLOCKS_PER_SEC << std::endl;
-    std::cout << "Killer hits: " << nKillerHits << std::endl;
-    std::cout << "Number of killer moves: " << killerMoves->size() << std::endl;
-   
-
 #endif
 
-    reinitKillerMoves();
+    //reinitKillerMoves();
+    //reinitHistoryMoves();
     return bestMove;
 }
 
-bool ScarlettCore::multicutPruning(libchess::Position &pos, std::vector<libchess::Move> &moves, int depth, int beta, bool nullMoveAllowed)
-{
-    if (depth >= MULTICUT_DEPTH)
-    {
-        int count = 0;
-
-        for (int i = 0; i < std::min((int)moves.size(), MC_NUM); i++)
-        {
-            libchess::Move move = moves[i];
-            pos.makemove(move);
-            int score = -search(pos, depth - MULTICUT_REDUCTION - 1, -beta, -beta + 1, nullMoveAllowed);
-            pos.undomove();
-            if (score >= beta)
-            {
-                count++;
-                if (count >= MC_CUT)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
 
 int ScarlettCore::nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent)
 {
@@ -311,7 +285,7 @@ int ScarlettCore::nullMoveSearch(libchess::Position &pos, int depth, int alpha, 
 }
 int ScarlettCore::quiescenceSearch(libchess::Position &pos, int alpha, int beta,  bool nullMoveAllowed, int depth)
 {
-    int stand_pat = evaluate(pos, beta);
+    int stand_pat = evaluate(pos, alpha, beta);
     if (stand_pat >= beta or depth == 0)
         return stand_pat;
     if (alpha < stand_pat)
@@ -345,7 +319,7 @@ int ScarlettCore::quiescenceSearch(libchess::Position &pos, int alpha, int beta,
     return alpha;
 }
 
-bool ScarlettCore::moveIsCheck(libchess::Position &pos, libchess::Move &move)
+bool ScarlettCore::moveIsCheck(libchess::Position &pos, libchess::Move move)
 {
     bool is_check = false;
     pos.makemove(move);
@@ -356,7 +330,7 @@ bool ScarlettCore::moveIsCheck(libchess::Position &pos, libchess::Move &move)
     pos.undomove();
     return is_check;
 }
-bool ScarlettCore::isTactical(libchess::Position &pos, libchess::Move &move)
+bool ScarlettCore::isTactical(libchess::Position &pos, libchess::Move move)
 {
     libchess::Piece pieceType = pos.piece_on(move.from());
     if (move.is_capturing() || move.is_promoting())
@@ -387,13 +361,7 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
 
         if(pvMoveFound && move == entry.pvMove){
             moveScoreGuess += 20000;
-        }
-
-        // if killer move, add 100000 to the move score guess
-        if (killerMoves->find(std::pair<libchess::Move, int>(move, depth)) != killerMoves->end())
-        {
-            moveScoreGuess += 10000;
-            nKillerHits++;
+            continue;
         }
         if (moveIsCheck(pos, move))
         {
@@ -402,7 +370,13 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
         // if the move is a capture, add the value of the captured piece to the move score guess
         if (move.is_capturing())
         {
-            moveScoreGuess += 2 * pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
+            moveScoreGuess += pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
+        }
+        else{
+            //if move in history, add history score
+            if(historyMoves->find(move) != historyMoves->end()){
+                moveScoreGuess += (*historyMoves)[move];
+            }
         }
 
         // if the move is a promotion, add the value of the promoted piece to the move score guess
@@ -444,38 +418,6 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
         moves[i] = paired[i].second;
     }
 }
-bool ScarlettCore::futilityPrune(libchess::Position &pos, libchess::Move &move, int depth, int alpha, int posScore)
-{
-    if (!isTactical(pos, move))
-    {
-        if (depth == 1)
-        {
-            if (posScore + FUTILITY_MARGIN_1 <= alpha)
-            {
-                nCutoffs++;
-                return true;
-            }
-        }
-        if (depth == 2)
-        {
-            if (posScore + FUTILITY_MARGIN_2 <= alpha)
-            {
-                nCutoffs++;
-                return true;
-            }
-        }
-        if (depth == 3)
-        {
-            if (posScore + FUTILITY_MARGIN_3 <= alpha)
-            {
-                nCutoffs++;
-                return true;
-            }
-        }
-        return false;
-    }
-    return false;
-}
 
 bool ScarlettCore::tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent)
 {
@@ -506,7 +448,7 @@ bool ScarlettCore::tryNullMove(libchess::Position &pos, int depth, int alpha, in
     return false;
 }
 
-bool ScarlettCore::checkStaleMateOrCheckmateFromMoves(libchess::Position &pos, std::vector<libchess::Move> &legalMoves, int &score)
+bool ScarlettCore::checkStaleMateOrCheckmateFromMoves(const libchess::Position &pos, const std::vector<libchess::Move> &legalMoves, int &score)
 {
     if (legalMoves.size() == 0)
     {
@@ -521,6 +463,65 @@ bool ScarlettCore::checkStaleMateOrCheckmateFromMoves(libchess::Position &pos, s
         return true;
     }
     return false;
+}
+
+bool ScarlettCore::tryMultiCutPruning(libchess::Position &pos, const std::vector<libchess::Move> &moves, int depth, int beta){
+    if (depth >= MULTICUT_DEPTH)
+    {
+        int count = 0;
+
+        for (int i = 0; i < std::min((int)moves.size(), MC_NUM); i++)
+        {
+            libchess::Move move = moves[i];
+            pos.makemove(move);
+            int score = -search(pos, depth - MULTICUT_REDUCTION - 1, -beta, -beta + 1, true);
+            pos.undomove();
+            if (score >= beta)
+            {
+                count++;
+                if (count >= MC_CUT)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+bool ScarlettCore::futilityPrune(const libchess::Position &pos, libchess::Move move, int depth, int alpha, int beta, int posScore)
+{
+    if(depth > 3){
+        return false;
+    }
+    int margin = 0;
+    if(depth == 1){
+        margin = FUTILITY_MARGIN_1;
+    }
+    else if(depth == 2){
+        margin = FUTILITY_MARGIN_2;
+    }
+    else if(depth == 3){
+        margin = FUTILITY_MARGIN_3;
+    }
+    bool capture = move.is_capturing();
+    if(capture){
+        //capture piece value
+        int captureValue = pieceValues[(int)pos.piece_on(move.to())];
+        //if the move is a capture, and the value of the captured piece is greater than the margin, don't prune
+        if(captureValue + posScore + margin > alpha){
+            return false;
+        }
+    }
+    bool promotion = move.is_promoting();
+    if(!promotion) return false;
+    //promotion piece value
+    int promotionValue = pieceValues[(int)move.promotion()];
+    //if the move is a promotion, and the value of the promoted piece is greater than the margin, don't prune
+    if(promotionValue + posScore + margin > alpha){
+        return false;
+    }
+
+    return true;
 }
 int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed)
 {
@@ -573,7 +574,7 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     // If search ended, evaluate position
     if (depth <= 0)
     {
-        int score = evaluate(pos, beta);
+        int score = evaluate(pos, alpha, beta);
 
         #if USE_TRANSPOSITION_TABLE
            transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
@@ -598,33 +599,24 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
         return score;
     }
 
-#if DEBUG
-    std::cout << "ALL MOVES: ";
-    for (libchess::Move move : moves)
-    {
-        std::cout << move << " ";
-    }
-    std::cout << std::endl;
-#endif
-
     orderMoves(moves, pos, depth, hash);
 
-#if DEBUG
-    std::cout << "ORDERERD MOVES: ";
-    for (libchess::Move move : moves)
+    if (tryMultiCutPruning(pos, moves, depth, beta))
     {
-        std::cout << move << " ";
+        return beta;
     }
-    std::cout << std::endl;
-#endif
+
     int b = beta;
     int score;
     bool first = true;
     int originalAlpha = alpha;
     libchess::Move bestMove = moves[0];
+    int posScore = evaluate(pos, alpha, beta);
     for (libchess::Move move : moves)
     {  
-        
+        if(depth <= 3 and futilityPrune(pos, move, depth, alpha, beta, posScore)){
+            continue;
+        }
         pos.makemove(move);
         score = -search(pos, depth - 1, -b, -alpha, true);
         if(score > alpha && score < beta && !first){
@@ -637,7 +629,9 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
         }
         if(alpha >= beta){
             nCutoffs++;
-            killerMoves->insert(std::pair<libchess::Move, int>(move, depth));
+            //const std::pair<libchess::Move, int> killerMove = std::pair<libchess::Move, int>(move, depth);
+            //killerMoves->insert(killerMove);
+            updateHistory(move, depth);
             #if USE_TRANSPOSITION_TABLE
                 transpositionTable->addEntry(hash, depth, alpha, EntryType::LOWERBOUND);
             #endif
@@ -670,7 +664,26 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     #endif
     return alpha;
 }
-int ScarlettCore::evaluate(libchess::Position &pos, int beta)
+  int ScarlettCore::evaluateMaterialBalance(const libchess::Bitboard& whitePawns, const libchess::Bitboard& whiteKnights, const libchess::Bitboard& whiteBishops, const libchess::Bitboard& whiteRooks, const libchess::Bitboard& whiteQueens, const libchess::Bitboard& blackPawns, const libchess::Bitboard& blackKnights, const libchess::Bitboard& blackBishops, const libchess::Bitboard& blackRooks, const libchess::Bitboard& blackQueens){
+    int score = 0;
+    score += whitePawns.count() * PAWN_VALUE;
+    score -= blackPawns.count() * PAWN_VALUE;
+
+    score += whiteKnights.count() * KNIGHT_VALUE;
+    score -= blackKnights.count() * KNIGHT_VALUE;
+
+    score += whiteBishops.count() * BISHOP_VALUE;
+    score -= blackBishops.count() * BISHOP_VALUE;
+
+    score += whiteRooks.count() * ROOK_VALUE;
+    score -= blackRooks.count() * ROOK_VALUE;
+
+    score += whiteQueens.count() * QUEEN_VALUE;
+    score -= blackQueens.count() * QUEEN_VALUE;
+    return score;
+  
+  }
+int ScarlettCore::evaluate(libchess::Position &pos, int alpha, int beta)
 {
     int score = 0;
     std::vector<libchess::Move> moves;
@@ -686,9 +699,7 @@ int ScarlettCore::evaluate(libchess::Position &pos, int beta)
         return DRAW_OR_STALEMATE_CONSTANT;
     }
 
-    score += pos.passed_pawns(libchess::Side::White).count() * PASSED_PAWN_MULT;
-    score -= pos.passed_pawns(libchess::Side::Black).count() * PASSED_PAWN_MULT;
-
+    
     libchess::Bitboard whitePawns = pos.pieces(libchess::Side::White, libchess::Piece::Pawn);
     libchess::Bitboard blackPawns = pos.pieces(libchess::Side::Black, libchess::Piece::Pawn);
 
@@ -704,21 +715,36 @@ int ScarlettCore::evaluate(libchess::Position &pos, int beta)
     libchess::Bitboard whiteQueens = pos.pieces(libchess::Side::White, libchess::Piece::Queen);
     libchess::Bitboard blackQueens = pos.pieces(libchess::Side::Black, libchess::Piece::Queen);
 
-    score += whitePawns.count() * PAWN_VALUE;
-    score -= blackPawns.count() * PAWN_VALUE;
+    libchess::Bitboard whitePassedPawns = pos.passed_pawns(libchess::Side::White);
+    libchess::Bitboard blackPassedPawns = pos.passed_pawns(libchess::Side::Black);
 
-    score += whiteKnights.count() * KNIGHT_VALUE;
-    score -= blackKnights.count() * KNIGHT_VALUE;
+    int nbPassedPawnsWhite = whitePassedPawns.count();
+    if(nbPassedPawnsWhite > 0){
+        score += nbPassedPawnsWhite * PASSED_PAWN_MULT;
+        score += 1 * (whitePawns & libchess::bitboards::Rank6).count() * PASSED_PAWN_MULT;
+        score += 2 * (whitePawns & libchess::bitboards::Rank7).count() * PASSED_PAWN_MULT;
+    }
 
-    score += whiteBishops.count() * BISHOP_VALUE;
-    score -= blackBishops.count() * BISHOP_VALUE;
+    int nbPassedPawnsBlack = blackPassedPawns.count();
+    if(nbPassedPawnsBlack > 0){
+        score -= nbPassedPawnsBlack * PASSED_PAWN_MULT;
+        score -= 1 * (blackPawns & libchess::bitboards::Rank3).count() * PASSED_PAWN_MULT;
+        score -= 2 * (blackPawns & libchess::bitboards::Rank2).count() * PASSED_PAWN_MULT;
+    }
 
-    score += whiteRooks.count() * ROOK_VALUE;
-    score -= blackRooks.count() * ROOK_VALUE;
+    score += evaluateMaterialBalance(whitePawns, whiteKnights, whiteBishops, whiteRooks, whiteQueens, blackPawns, blackKnights, blackBishops, blackRooks, blackQueens);
 
-    score += whiteQueens.count() * QUEEN_VALUE;
-    score -= blackQueens.count() * QUEEN_VALUE;
-
+    int sideMultiplier = (pos.turn() == libchess::Side::White) ? 1 : -1;
+    if(pos.turn() == libchess::Side::Black){
+        beta = -alpha;
+        alpha = -beta;
+    }
+    if(score >= beta + LAZY_EVAL_MARGIN ){
+        return score * sideMultiplier;
+    }
+    if(score <= alpha - LAZY_EVAL_MARGIN){
+        return score * sideMultiplier;
+    }
 
     int whiteSemiOpenFiles = 0;
     libchess::Bitboard whiteSemiOpenFilesBitboard;
@@ -898,7 +924,7 @@ int ScarlettCore::evaluate(libchess::Position &pos, int beta)
         score -= 60;
     }
 
-    return score * (pos.turn() == libchess::Side::White ? 1 : -1);
+    return score * sideMultiplier;
 }
 
 void ScarlettCore::reinitKillerMoves()
@@ -909,4 +935,29 @@ void ScarlettCore::reinitKillerMoves()
         delete killerMoves;
     }
     killerMoves = new std::unordered_set<std::pair<libchess::Move, int>, pair_hash>();
+}
+
+void ScarlettCore::reinitHistoryMoves()
+{
+    // initialize the map std::map<std::pair<libchess::Move, int>, int> *killerMoves;
+    if (historyMoves != nullptr)
+    {
+        delete historyMoves;
+    }
+    historyMoves = new std::unordered_map<libchess::Move, int, MoveHash>();
+}
+
+void ScarlettCore::updateHistory(libchess::Move move, int depth)
+{
+    if(move.is_capturing()){
+        return;
+    }
+    if (historyMoves->find(move) != historyMoves->end())
+    {
+        (*historyMoves)[move] += 1 << depth;
+    }
+    else
+    {
+        (*historyMoves)[move] = 1 << depth;
+    }
 }
