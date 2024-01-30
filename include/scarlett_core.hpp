@@ -124,7 +124,7 @@ private:
     bool futilityPrune(const libchess::Position &pos, libchess::Move move, int depth, int alpha, int beta, int posScore);
     void orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth, uint64_t hash);
     bool isTactical(libchess::Position &pos, libchess::Move move);
-    int pieceValues[6];
+    int pieceValues[7];
     bool tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent);
     bool moveIsCheck(libchess::Position &pos, libchess::Move move);
     void reinitKillerMoves();

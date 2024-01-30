@@ -31,7 +31,7 @@ class OpeningBook
         OpeningBook(std::string bookFile, PositionHasher* zobristHasher){
             this->bookFile = bookFile;
             this->zobristHasher = zobristHasher;
-            parseBook();
+            //parseBook();
         }
         bool tryGetMove(libchess::Position &pos, libchess::Move &move, int turn){
             double pow = (double)turn / 2.0;

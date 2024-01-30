@@ -4,7 +4,7 @@
 #include "hashmap.hpp"
 #include <cstdint>
 #include "position.hpp"
-
+#include <omp.h>
 class PVEntry
 {
     public:
@@ -26,7 +26,7 @@ class PVTable{
             PVEntry entry;
             entry.depth = depth;
             entry.pvMove = move;
-
+            #pragma omp critical
             table[hash] = entry;
         }
         bool tryGetEntry(uint64_t hash, PVEntry &entry){

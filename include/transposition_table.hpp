@@ -4,7 +4,7 @@
 #include "hashmap.hpp"
 #include <cstdint>
 #include "position.hpp"
-
+#include <omp.h>
 //define an enum for the different types of entries
 enum EntryType
 {
@@ -27,7 +27,11 @@ class TranspositionTable{
     public:
        
         void addEntry(uint64_t hash, int depth, int score, EntryType type){
-            if(table.find(hash) != table.end()){
+            bool in;
+            #pragma omp critical
+            in = table.find(hash) != table.end();
+
+            if(in){
                 if(table[hash].depth > depth){
                     return;
                 }
@@ -37,15 +41,22 @@ class TranspositionTable{
             entry.depth = depth;
             entry.score = score;
             entry.type = type;
-
+            #pragma omp critical
             table[hash] = entry;
         }
         bool tryGetEntry(uint64_t hash, TTEntry &entry){
-            if(table.find(hash) == table.end()){
+            bool notIn;
+            #pragma omp critical
+            notIn = table.find(hash) == table.end();
+
+            if(notIn){
                 return false;
             }
+            
+            #pragma omp critical
             entry = table[hash];
             return true;
+            
         }
 };
 

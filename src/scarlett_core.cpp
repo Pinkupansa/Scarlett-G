@@ -14,8 +14,10 @@
 #define BEST_POSSIBLE_SCORE 100000000
 #define DRAW_OR_STALEMATE_CONSTANT 0
 #define USE_BOOK 0
-#define USE_TRANSPOSITION_TABLE 1
-#define MAX_SECONDS 3
+#define USE_TRANSPOSITION_TABLE 0
+#define USE_PV_TABLE 0
+#define USE_HISTORY_TABLE 0
+#define MAX_SECONDS 5
 ScarlettCore::ScarlettCore(int color, int depth)
 {
     this->color = color;
@@ -27,19 +29,19 @@ ScarlettCore::ScarlettCore(int color, int depth)
     this->zobristHasher = new PositionHasher();
     this->openingBook = new OpeningBook("../resources/opening_book.txt", zobristHasher);
 
-    pieceValues[libchess::Piece::Pawn] = PAWN_VALUE;
-    pieceValues[libchess::Piece::Knight] = this->KNIGHT_VALUE;
-    pieceValues[libchess::Piece::Bishop] = this->BISHOP_VALUE;
-    pieceValues[libchess::Piece::Rook] = this->ROOK_VALUE;
-    pieceValues[libchess::Piece::Queen] = this->QUEEN_VALUE;
-    pieceValues[libchess::Piece::King] = KING_VALUE;
-
     this->PAWN_VALUE = 100;
     this->KNIGHT_VALUE = 521;
     this->BISHOP_VALUE = 572;
     this->ROOK_VALUE = 824;
     this->QUEEN_VALUE = 1710;
 
+    pieceValues[libchess::Piece::Pawn] = this->PAWN_VALUE;
+    pieceValues[libchess::Piece::Knight] = this->KNIGHT_VALUE;
+    pieceValues[libchess::Piece::Bishop] = this->BISHOP_VALUE;
+    pieceValues[libchess::Piece::Rook] = this->ROOK_VALUE;
+    pieceValues[libchess::Piece::Queen] = this->QUEEN_VALUE;
+    pieceValues[libchess::Piece::King] = this->KING_VALUE;
+    pieceValues[libchess::Piece::None] = this->PAWN_VALUE; //only used for en passant
     // this->PAWN_ADVANCE_A = 10;
     // this->PAWN_ADVANCE_B = 20;
     this->PASSED_PAWN_MULT = 10;
@@ -180,7 +182,7 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     this->timeSpentSorting = 0;
     this->nKillerHits = 0;
 
-    std::vector<libchess::Move> moves = pos.legal_moves();
+    
 
 
 #if DEBUG
@@ -193,8 +195,7 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     std::cout << std::endl;
 #endif
 
-    orderMoves(moves, pos, depth, pos.hash());
-
+    
 #if DEBUG
     std::cout << std::endl
               << "ORDERED MOVES: " << std::endl;
@@ -207,52 +208,72 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     libchess::Move bestMove;
     clock_t start;
     double duration;
-    start = clock();
+    start = omp_get_wtime();
     int bestScore = 0;
     int currentDepth = 1;
+    
     if(!(openingBook->tryGetMove(pos, bestMove, turn) and USE_BOOK)){
-
+        
         while (true){
+            //print current depth 
+            std::cout << "Depth: " << currentDepth << std::endl;
+            //create a copy of the position for each thread
+            std::vector<libchess::Move> moves = pos.legal_moves();
+            orderMoves(moves, pos, depth, pos.hash());
 
-            libchess::Move bestMoveInIteration;
-            int bestScoreInIteration = -BEST_POSSIBLE_SCORE;
+            int maxNumberOfThreads = omp_get_max_threads();
+            std::vector<libchess::Position> positions(maxNumberOfThreads);
+            for(int i = 0; i < maxNumberOfThreads; i++){
+                positions[i].set_fen(pos.get_fen());
+            }
+            std::vector<int> bestScoresInIteration(maxNumberOfThreads, -BEST_POSSIBLE_SCORE);
+            std::vector<libchess::Move> bestMovesInIteration(maxNumberOfThreads);
+            #pragma omp parallel for
             for (libchess::Move move : moves)
             {
+                int threadId = omp_get_thread_num();
+                libchess::Position position = positions[threadId];
         #if DEBUG
                 std::cout << "TEST MOVE : " << move << std::endl;
         #endif
-                pos.makemove(move);
+                position.makemove(move);
         #if DEBUG
                 std::cout << pos << std::endl;
         #endif
-                int score = -search(pos, currentDepth - 1, -BEST_POSSIBLE_SCORE, -bestScoreInIteration, true);
-                pos.undomove();
-                if (score > bestScoreInIteration)
+                int score = -search(position, currentDepth - 1, -BEST_POSSIBLE_SCORE, -bestScoresInIteration[threadId], true);
+                position.undomove();
+                if (score > bestScoresInIteration[threadId])
                 {
                     // std::cout << "Score: " << (2 * (1 - color) - 1) * score << std::endl;
-                    bestScoreInIteration = score;
-                    bestMoveInIteration = move;
-                }
-
-                if((clock() - start) / (double)CLOCKS_PER_SEC > MAX_SECONDS){
-                    break;
+                    bestScoresInIteration[threadId] = score;
+                    bestMovesInIteration[threadId] = move;
                 }
             }
-            if((clock() - start) / (double)CLOCKS_PER_SEC > MAX_SECONDS){
-                pvTable->addEntry(pos.hash(), bestMoveInIteration, currentDepth);
-                break;
+
+            int bestScoreInIteration = -BEST_POSSIBLE_SCORE;
+            libchess::Move bestMoveInIteration;
+            for(int i = 0; i < maxNumberOfThreads; i++){
+                if(bestScoresInIteration[i] > bestScoreInIteration){
+                    bestScoreInIteration = bestScoresInIteration[i];
+                    bestMoveInIteration = bestMovesInIteration[i];
+                }
             }
             currentDepth++;
             bestMove = bestMoveInIteration;
             bestScore = bestScoreInIteration;
+            #if USE_PV_TABLE
             pvTable->addEntry(pos.hash(), bestMove, currentDepth);
+            #endif
             transpositionTable->addEntry(pos.hash(), currentDepth, bestScore, EntryType::EXACT);
+            if((omp_get_wtime() - start) > MAX_SECONDS){
+                break;
+            }
         }
     }
     //principalVariationTable->insert(std::pair<uint64_t, libchess::Move>(pos.hash(), bestMove));
     
 #if USAGE_MODE
-    duration = (clock() - start) / (double)CLOCKS_PER_SEC;
+    duration = (omp_get_wtime() - start);
     
     std::cout << std::endl;
     std::cout << "Time: " << duration << std::endl;
@@ -265,9 +286,6 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     std::cout << "Nodes searched: " << nodesSearched << std::endl;
     std::cout << "Cutoffs: " << nCutoffs << std::endl;
 #endif
-
-    //reinitKillerMoves();
-    //reinitHistoryMoves();
     return bestMove;
 }
 
@@ -346,23 +364,29 @@ bool ScarlettCore::isTactical(libchess::Position &pos, libchess::Move move)
 
 void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Position &pos, int depth, uint64_t hash)
 {
-    std::vector<int> moveScores(moves.size());
+    std::vector<int> moveScores(moves.size(), 0);
     libchess::Side opponent = (libchess::Side)(1 - (int)pos.turn());
 
     PVEntry entry;
-    bool pvMoveFound = pvTable->tryGetEntry(hash, entry);
 
+    #if USE_PV_TABLE
+        bool pvMoveFound = pvTable->tryGetEntry(hash, entry);
+    #endif
     for (int i = 0; i < moves.size(); i++)
     {
+
         libchess::Move move = moves[i];
+    
         int moveScoreGuess = 0;
         libchess::Piece movePieceType = pos.piece_on(move.from());
         libchess::Piece capturePieceType = pos.piece_on(move.to());
 
+        #if USE_PV_TABLE
         if(pvMoveFound && move == entry.pvMove){
             moveScoreGuess += 20000;
             continue;
         }
+        #endif
         if (moveIsCheck(pos, move))
         {
             moveScoreGuess += 1000;
@@ -370,14 +394,18 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
         // if the move is a capture, add the value of the captured piece to the move score guess
         if (move.is_capturing())
         {
+            
             moveScoreGuess += pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
         }
-        else{
-            //if move in history, add history score
-            if(historyMoves->find(move) != historyMoves->end()){
-                moveScoreGuess += (*historyMoves)[move];
+        #if USE_HISTORY_TABLE
+            else{
+                //if move in history, add history score
+                
+                if(historyMoves->find(move) != historyMoves->end()){
+                    moveScoreGuess += (*historyMoves)[move];
+                }
             }
-        }
+        #endif
 
         // if the move is a promotion, add the value of the promoted piece to the move score guess
         if (movePieceType == libchess::Piece::Pawn)
@@ -490,6 +518,7 @@ bool ScarlettCore::tryMultiCutPruning(libchess::Position &pos, const std::vector
 }
 bool ScarlettCore::futilityPrune(const libchess::Position &pos, libchess::Move move, int depth, int alpha, int beta, int posScore)
 {
+    
     if(depth > 3){
         return false;
     }
@@ -503,6 +532,7 @@ bool ScarlettCore::futilityPrune(const libchess::Position &pos, libchess::Move m
     else if(depth == 3){
         margin = FUTILITY_MARGIN_3;
     }
+
     bool capture = move.is_capturing();
     if(capture){
         //capture piece value
@@ -529,12 +559,13 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
     Beta is the best score that the opponent (treated as a minimizing player in negamax framework) can achieve so far.
     Can achieve means that the opponent can force a score of beta or higher, and the current player can force a score of alpha or higher.*/
 
-    nodesSearched++;
+    //nodesSearched++;
 
     if (pos.is_draw())
     {
         return DRAW_OR_STALEMATE_CONSTANT;
     }
+    //print thread id and position
     uint64_t hash = pos.hash();
     #if USE_TRANSPOSITION_TABLE
         TTEntry entry;
@@ -631,7 +662,9 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
             nCutoffs++;
             //const std::pair<libchess::Move, int> killerMove = std::pair<libchess::Move, int>(move, depth);
             //killerMoves->insert(killerMove);
-            updateHistory(move, depth);
+            #if USE_HISTORY_TABLE
+                updateHistory(move, depth);
+            #endif
             #if USE_TRANSPOSITION_TABLE
                 transpositionTable->addEntry(hash, depth, alpha, EntryType::LOWERBOUND);
             #endif
@@ -642,9 +675,11 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
         first = false;
         
     }
-    if(score > originalAlpha){
-        pvTable->addEntry(hash, bestMove, depth);
-    }
+    #if USE_PV_TABLE
+        if(score > originalAlpha){
+            pvTable->addEntry(hash, bestMove, depth);
+        }
+    #endif
     #if USE_TRANSPOSITION_TABLE
         EntryType entryType;
 
@@ -656,7 +691,6 @@ int ScarlettCore::search(libchess::Position &pos, int depth, int alpha, int beta
         {
             entryType = EntryType::EXACT;
         }
-        
         transpositionTable->addEntry(hash, depth, alpha, entryType);
         
         
@@ -954,10 +988,12 @@ void ScarlettCore::updateHistory(libchess::Move move, int depth)
     }
     if (historyMoves->find(move) != historyMoves->end())
     {
+        #pragma omp critical
         (*historyMoves)[move] += 1 << depth;
     }
     else
     {
+        #pragma omp critical
         (*historyMoves)[move] = 1 << depth;
     }
 }
