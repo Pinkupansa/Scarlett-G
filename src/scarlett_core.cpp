@@ -13,9 +13,9 @@
 #define CHECKMATE_CONSTANT 1000000
 #define BEST_POSSIBLE_SCORE 100000000
 #define DRAW_OR_STALEMATE_CONSTANT 0
-#define USE_BOOK 0
+#define USE_BOOK 1
 #define USE_TRANSPOSITION_TABLE 0
-#define USE_PV_TABLE 0
+#define USE_PV_TABLE 1
 #define USE_HISTORY_TABLE 0
 #define MAX_SECONDS 5
 ScarlettCore::ScarlettCore(int color, int depth)
@@ -258,7 +258,7 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
                     bestMoveInIteration = bestMovesInIteration[i];
                 }
             }
-            currentDepth++;
+            
             bestMove = bestMoveInIteration;
             bestScore = bestScoreInIteration;
             #if USE_PV_TABLE
@@ -268,10 +268,11 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
             if((omp_get_wtime() - start) > MAX_SECONDS){
                 break;
             }
+            currentDepth++;
         }
     }
-    //principalVariationTable->insert(std::pair<uint64_t, libchess::Move>(pos.hash(), bestMove));
-    
+    //transpositionTable->mergeAllTables();
+
 #if USAGE_MODE
     duration = (omp_get_wtime() - start);
     
@@ -285,6 +286,8 @@ libchess::Move ScarlettCore::getMove(libchess::Position pos)
     // nodesSearched
     std::cout << "Nodes searched: " << nodesSearched << std::endl;
     std::cout << "Cutoffs: " << nCutoffs << std::endl;
+    std::cout << "TT size : " << transpositionTable->getSize() << std::endl;
+    std::cout << "PV size : " << pvTable->getSize() << std::endl;
 #endif
     return bestMove;
 }
@@ -401,6 +404,7 @@ void ScarlettCore::orderMoves(std::vector<libchess::Move> &moves, libchess::Posi
             else{
                 //if move in history, add history score
                 
+                #pragma omp critical
                 if(historyMoves->find(move) != historyMoves->end()){
                     moveScoreGuess += (*historyMoves)[move];
                 }
@@ -986,14 +990,13 @@ void ScarlettCore::updateHistory(libchess::Move move, int depth)
     if(move.is_capturing()){
         return;
     }
+    #pragma omp critical
     if (historyMoves->find(move) != historyMoves->end())
     {
-        #pragma omp critical
         (*historyMoves)[move] += 1 << depth;
     }
     else
     {
-        #pragma omp critical
         (*historyMoves)[move] = 1 << depth;
     }
 }
