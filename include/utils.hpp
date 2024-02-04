@@ -69,8 +69,6 @@ class PositionHasher
             if(epIndex == 255) return hash;
             hash ^= zobristEnPassant[epIndex];
 
-            hash ^= pos.halfmoves();
-
             return hash;
         }
 

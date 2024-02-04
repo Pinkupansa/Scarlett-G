@@ -1,7 +1,7 @@
 project(Scarlett-G)
 cmake_minimum_required(VERSION 3.5.1)
 set(CMAKE_CXX_STANDARD 20)
-
+find_package(TBB REQUIRED)
 file(GLOB SOURCES "src/*.cpp")
 add_executable(${PROJECT_NAME} ${SOURCES})
 #add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/EvolutionaryAlgorithms)
@@ -10,9 +10,10 @@ target_link_libraries(${PROJECT_NAME} libchess-static)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/EvolutionaryAlgorithms)
 target_link_libraries(${PROJECT_NAME} EAL)
+target_link_libraries(${PROJECT_NAME} TBB::tbb)
 
 # Add all headers files under the include directory
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 target_include_directories(${PROJECT_NAME} PRIVATE libchess/src/libchess)
 
-set(CMAKE_CXX_FLAGS "-O3 -march=native -fopenmp")
+set(CMAKE_CXX_FLAGS "-O2 -fopenmp")
