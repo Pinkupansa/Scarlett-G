@@ -12,10 +12,10 @@
 class KillerMoveTable {
 private:
     //tbb::concurrent_hash_map<uint64_t, uint64_t> table;
-    bool killerMoveTable[2][64][64][100] = { false };
+    bool killerMoveTable[2][64][64][100] = {false};
 public:
 
-    inline void addKillerMove(libchess::Side side, libchess::Move move, int depth) {
+    inline void addKillerMove(libchess::Side side, libchess::Move move, int depth) { 
         #pragma omp critical
         killerMoveTable[(int)side][(int)move.from()][(int)move.to()][depth] = true;
     }

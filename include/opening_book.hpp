@@ -31,7 +31,7 @@ class OpeningBook
         OpeningBook(std::string bookFile, PositionHasher* zobristHasher){
             this->bookFile = bookFile;
             this->zobristHasher = zobristHasher;
-            parseBook();
+            //parseBook();
         }
         bool tryGetMove(libchess::Position &pos, libchess::Move &move, int turn){
             double pow = (double)turn / 2.0;
@@ -66,7 +66,9 @@ class OpeningBook
             std::ifstream bookStream;
             bookStream.open(bookFile);
             if (!bookStream.is_open()) {
-                throw std::runtime_error("Failed to open book file");
+                //print error in yellow text and return
+                std::cout << "\033[1;33m" << "Error: " << "\033[0m" << "Could not open book file" << std::endl;
+                return;
             }
             std::string line;
             uint64_t currentHash = 0;
@@ -87,7 +89,7 @@ class OpeningBook
                         currentMoves.clear();
                     }
                     //get fen
-                    std::string fen = words[1] + " " + words[2] + " " + words[3] + " " + words[4] + " " + words[5] + " " + words[6];
+                    std::string fen = words[1] + " " + words[2] + " " + words[3] + " " + words[4];
                     pos.set_fen(fen);
                     currentHash = zobristHasher->calculateShortFenHash(pos);
                     if (first)
@@ -114,10 +116,8 @@ class OpeningBook
             book[currentHash] = currentMoves;
             currentMoves.clear();
 
-
-
             std::cout << "done parsing book" << " num positions: " << book.size() << std::endl;
-
+            std::cout.flush();
             //close file
             bookStream.close();
         }

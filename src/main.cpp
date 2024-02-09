@@ -38,7 +38,7 @@ int main(int argc, char *argv[])
         if (strcmp(argv[1], "ai") == 0)
         {
 
-            player1 = new ScarlettCore(1, 2);
+            player1 = new ScarlettCore();
         }
         if (strcmp(argv[1], "human") == 0)
         {
@@ -48,7 +48,7 @@ int main(int argc, char *argv[])
         if (strcmp(argv[2], "ai") == 0)
         {
 
-            player2 = new ScarlettCore(1, 8);
+            player2 = new ScarlettCore();
         }
         if (strcmp(argv[2], "human") == 0)
         {

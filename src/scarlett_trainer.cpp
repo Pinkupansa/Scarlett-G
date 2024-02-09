@@ -38,7 +38,7 @@ void evolutionLoop(EvolutionInterface *evolutionInterface)
 void ScarlettTrainer::testDefault()
 {
     int defaultWeights[20] = {300, 300, 500, 900, 1000, 20, 30, 10, 7, 7, 28, 51, 27, 50, 30, 6, 40, 20, 5, 50};
-    ScarlettCore *individual = new ScarlettCore(1, 6);
+    ScarlettCore *individual = new ScarlettCore();
     individual->setWeights(defaultWeights);
 
     // convert default weights to gray code
@@ -145,7 +145,7 @@ double ScarlettTrainer::evaluate(int *chromosome)
     libchess::Position pos;
     gamesFile.open("../CCRL_games_converted.txt");
 
-    ScarlettCore individual(1, 1);
+    ScarlettCore individual;
     convertChromosomeToIndividual(chromosome, &individual);
     double fitness = 0;
     int firstGame = 0;

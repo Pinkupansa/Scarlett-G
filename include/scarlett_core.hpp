@@ -25,17 +25,19 @@
 #include "pv_table.hpp"
 #include "movegen.hpp"
 #include "killer_move_table.hpp"
+#include "search_logger.hpp"
 
 #define DEBUG 0
 #define USAGE_MODE 1
 #define CHECKMATE_CONSTANT 1000000
 #define BEST_POSSIBLE_SCORE 100000000
 #define DRAW_OR_STALEMATE_CONSTANT 0
-#define USE_BOOK 1
+#define USE_BOOK 0 
 #define USE_TRANSPOSITION_TABLE 1
 #define USE_PV_TABLE 1
 #define USE_HISTORY_TABLE 1
 #define MAX_SECONDS 5
+#define USE_LOGGER 0
 
 struct MoveHash
 {
@@ -65,81 +67,89 @@ class ScarlettCore : public Player
 public:
     
     
-    ScarlettCore(int color, int depth)
-{
-    for(int i = 0; i < omp_get_max_threads(); i++){
+    ScarlettCore()
+    {
+        //disable parallelism
+        omp_set_num_threads(1);
+        for(int i = 0; i < omp_get_max_threads(); i++){
         nodesSearched.push_back(0);
 
+        }
+
+        #if USE_LOGGER
+        this->logger = new SearchLogger("../search_log.txt");
+        #endif      
+            
+        this->transpositionTable = new TranspositionTable();
+        this->pvTable = new PVTable();
+        this->zobristHasher = new PositionHasher();
+        this->openingBook = new OpeningBook("../resources/opening_book.txt", zobristHasher);
+        this->historyMoves = new HistoryTable();
+        this->killerMoveTable = new KillerMoveTable();
+        this->PAWN_VALUE = 100;
+        this->KNIGHT_VALUE = 521;
+        this->BISHOP_VALUE = 572;
+        this->ROOK_VALUE = 824;
+        this->QUEEN_VALUE = 1710;
+
+        pieceValues[libchess::Piece::Pawn] = this->PAWN_VALUE;
+        pieceValues[libchess::Piece::Knight] = this->KNIGHT_VALUE;
+        pieceValues[libchess::Piece::Bishop] = this->BISHOP_VALUE;
+        pieceValues[libchess::Piece::Rook] = this->ROOK_VALUE;
+        pieceValues[libchess::Piece::Queen] = this->QUEEN_VALUE;
+        pieceValues[libchess::Piece::King] = this->KING_VALUE;
+        pieceValues[libchess::Piece::None] = this->PAWN_VALUE; //only used for en passant
+        // this->PAWN_ADVANCE_A = 10;
+        // this->PAWN_ADVANCE_B = 20;
+        this->PASSED_PAWN_MULT = 10;
+        this->DOUBLED_PAWN_PENALTY = 14;
+        this->ISOLATED_PAWN_PENALTY = 8;
+        // this->BACKWARD_PAWN_PENALTY = 5;
+        // this->WEAK_SQUARE_PENALTY = 5;
+        // this->PASSED_PAWN_ENEMY_KING_DISTANCE = 10;
+        this->KNIGHT_MOBILITY = 6;
+        this->BISHOP_MOBILITY = 4;
+        this->BISHOP_PAIR = 28;
+        this->ROOK_ATTACK_KING_FILE = 51;
+        this->ROOK_ATTACK_KING_ADJ_FILE = 8;
+        // this->ROOK_ATTACK_KING_ADJ_FILE_ABGH = 26;
+        this->ROOK_7TH_RANK = 30;
+        this->ROOK_CONNECTED = 6;
+        this->ROOK_MOBILITY = 4;
+        // this->ROOK_BEHIND_PASSED_PAWN = 10;
+        this->ROOK_OPEN_FILE = 27;
+        this->ROOK_SEMI_OPEN_FILE = 11;
+        this->QUEEN_MOBILITY = 2;
+        this->KING_FRIENDLY_PAWNS = 35;
+        // this->KING_NO_FRIENDLY_PAWN_ADJ = 10;
+        // this->KING_PRESSURE_MULT = 5;
+
+        this->NULL_MOVE_REDUCTION = 3;
+        this->USE_ADPT = 1;
+        this->ADPT_DEPTH = 6;
+        this->FUTILITY_DEPTH = 3;
+        this->FUTILITY_MARGIN_1 = 500;
+        this->FUTILITY_MARGIN_2 = 650;
+        this->FUTILITY_MARGIN_3 = 1200;
+
+        this->MULTICUT_REDUCTION = 2;
+        this->MULTICUT_DEPTH = 2;
+        this->MC_NUM = 10;
+        this->MC_CUT = 3;
+
+        this->QUIESCENCE_DEPTH = 0;
+
+            
     }
-    this->color = color;
-    this->depth = depth;
-
-    
-    this->transpositionTable = new TranspositionTable();
-    this->pvTable = new PVTable();
-    this->zobristHasher = new PositionHasher();
-    this->openingBook = new OpeningBook("../resources/opening_book.txt", zobristHasher);
-    this->historyMoves = new HistoryTable();
-    this->killerMoveTable = new KillerMoveTable();
-    this->PAWN_VALUE = 100;
-    this->KNIGHT_VALUE = 521;
-    this->BISHOP_VALUE = 572;
-    this->ROOK_VALUE = 824;
-    this->QUEEN_VALUE = 1710;
-
-    pieceValues[libchess::Piece::Pawn] = this->PAWN_VALUE;
-    pieceValues[libchess::Piece::Knight] = this->KNIGHT_VALUE;
-    pieceValues[libchess::Piece::Bishop] = this->BISHOP_VALUE;
-    pieceValues[libchess::Piece::Rook] = this->ROOK_VALUE;
-    pieceValues[libchess::Piece::Queen] = this->QUEEN_VALUE;
-    pieceValues[libchess::Piece::King] = this->KING_VALUE;
-    pieceValues[libchess::Piece::None] = this->PAWN_VALUE; //only used for en passant
-    // this->PAWN_ADVANCE_A = 10;
-    // this->PAWN_ADVANCE_B = 20;
-    this->PASSED_PAWN_MULT = 10;
-    this->DOUBLED_PAWN_PENALTY = 14;
-    this->ISOLATED_PAWN_PENALTY = 8;
-    // this->BACKWARD_PAWN_PENALTY = 5;
-    // this->WEAK_SQUARE_PENALTY = 5;
-    // this->PASSED_PAWN_ENEMY_KING_DISTANCE = 10;
-    this->KNIGHT_MOBILITY = 6;
-    this->BISHOP_MOBILITY = 4;
-    this->BISHOP_PAIR = 28;
-    this->ROOK_ATTACK_KING_FILE = 51;
-    this->ROOK_ATTACK_KING_ADJ_FILE = 8;
-    // this->ROOK_ATTACK_KING_ADJ_FILE_ABGH = 26;
-    this->ROOK_7TH_RANK = 30;
-    this->ROOK_CONNECTED = 6;
-    this->ROOK_MOBILITY = 4;
-    // this->ROOK_BEHIND_PASSED_PAWN = 10;
-    this->ROOK_OPEN_FILE = 27;
-    this->ROOK_SEMI_OPEN_FILE = 11;
-    this->QUEEN_MOBILITY = 2;
-    this->KING_FRIENDLY_PAWNS = 35;
-    // this->KING_NO_FRIENDLY_PAWN_ADJ = 10;
-    // this->KING_PRESSURE_MULT = 5;
-
-    this->NULL_MOVE_REDUCTION = 3;
-    this->USE_ADPT = 1;
-    this->ADPT_DEPTH = 6;
-    this->FUTILITY_DEPTH = 3;
-    this->FUTILITY_MARGIN_1 = 500;
-    this->FUTILITY_MARGIN_2 = 650;
-    this->FUTILITY_MARGIN_3 = 1200;
-
-    this->MULTICUT_REDUCTION = 2;
-    this->MULTICUT_DEPTH = 2;
-    this->MC_NUM = 10;
-    this->MC_CUT = 3;
-
-    this->QUIESCENCE_DEPTH = 0;
-
-    
-}
 
     
     ~ScarlettCore()
     {
+        #if USE_LOGGER
+
+        delete this->logger;
+        
+        #endif
         delete this->transpositionTable;
         delete this->openingBook;
         delete this->pvTable;
@@ -206,47 +216,63 @@ public:
             }
             std::vector<int> bestScoresInIteration(maxNumberOfThreads, -BEST_POSSIBLE_SCORE);
             std::vector<libchess::Move> bestMovesInIteration(maxNumberOfThreads);
-            #pragma omp parallel for
-            for (libchess::Move move : moves)
-            {
-                int threadId = omp_get_thread_num();
-                libchess::Position position = positions[threadId];
-        #if DEBUG
-                std::cout << "TEST MOVE : " << move << std::endl;
-        #endif
-                position.makemove(move);
-        #if DEBUG
-                std::cout << pos << std::endl;
-        #endif
-                int score = -search(position, currentDepth - 1, -BEST_POSSIBLE_SCORE, -bestScoresInIteration[threadId], true);
-                position.undomove();
-                if (score > bestScoresInIteration[threadId])
-                {
-                    // std::cout << "Score: " << (2 * (1 - color) - 1) * score << std::endl;
-                    bestScoresInIteration[threadId] = score;
-                    bestMovesInIteration[threadId] = move;
-                }
-            }
-
+            
+            
             int bestScoreInIteration = -BEST_POSSIBLE_SCORE;
             libchess::Move bestMoveInIteration;
-            for(int i = 0; i < maxNumberOfThreads; i++){
-                if(bestScoresInIteration[i] > bestScoreInIteration){
-                    bestScoreInIteration = bestScoresInIteration[i];
-                    bestMoveInIteration = bestMovesInIteration[i];
+            #pragma omp parallel
+            {
+                #pragma omp for
+                for (libchess::Move move : moves)
+                {
+                    int threadId = omp_get_thread_num();
+                    libchess::Position position = positions[threadId];
+            #if DEBUG
+                    std::cout << "TEST MOVE : " << move << std::endl;
+            #endif
+                    position.makemove(move);
+            #if DEBUG
+                    std::cout << pos << std::endl;
+            #endif
+                    int score = -search(position, currentDepth - 1, -BEST_POSSIBLE_SCORE, -bestScoreInIteration, true, 0);
+                    
+                    #if USE_LOGGER
+                        std::pair<std::string, std::string> scoreProperty = {"score", std::to_string(-score)};
+                        std::pair<std::string, std::string> moveProperty = {"move", move}; 
+                        logger->addPropertyToChildWithMatchingFen(0, position.get_fen(), scoreProperty);
+                        logger->addPropertyToChildWithMatchingFen(0, position.get_fen(), moveProperty);
+                    #endif
+
+                    position.undomove();
+                    if(score > bestScoreInIteration){
+                        #pragma omp critical
+                        bestScoreInIteration = score;
+                        #pragma omp critical
+                        bestMoveInIteration = move; 
+                    }
                 }
             }
-            
             bestMove = bestMoveInIteration;
             bestScore = bestScoreInIteration;
+            
             #if USE_PV_TABLE
             pvTable->addEntry(pos.hash(), bestMove, currentDepth);
             #endif
+
             transpositionTable->addEntry(pos.hash(), currentDepth, bestScore, EntryType::EXACT);
-            if((omp_get_wtime() - start) > MAX_SECONDS){
+
+            if((omp_get_wtime() - start) > MAX_SECONDS or (currentDepth >= 6 and USE_LOGGER)){
+                
+                #if USE_LOGGER
+                logger->write();
+                #endif
                 break;
             }
             currentDepth++;
+            #if USE_LOGGER
+            logger->eraseLog();
+            #endif
+            
         }
     }
     //transpositionTable->mergeAllTables();
@@ -256,7 +282,7 @@ public:
     duration = (omp_get_wtime() - start);
     
     std::cout << std::endl;
-    std::cout << "Time: " << duration << std::endl;
+    std::cout << "Time: " << duration << std::endl; 
     // write best move in
     std::cout << "\033[1;31mBEST MOVE: "
               << bestMove << " " << color * bestScore / 100.0 << "\033[0m" << std::endl;
@@ -515,150 +541,164 @@ public:
 
     return score * sideMultiplier;
 }
-    inline int search(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed)
-{
-    /*Alpha is the best score that the current player (treated as a maximizing player in negamax framework) can achieve so far.
-    Beta is the best score that the opponent (treated as a minimizing player in negamax framework) can achieve so far.
-    Can achieve means that the opponent can force a score of beta or higher, and the current player can force a score of alpha or higher.*/
-
-    nodesSearched[omp_get_thread_num()]++;
-
-    if (pos.is_draw())
+    inline int search(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int parentLoggerIndex = -1)
     {
-        return DRAW_OR_STALEMATE_CONSTANT;
-    }
-    //print thread id and position
-    uint64_t hash = pos.hash();
-    #if USE_TRANSPOSITION_TABLE
-        TTEntry entry;
-        
-        if(transpositionTable->tryGetEntry(hash, entry)){
-            if(entry.depth >= depth){
-                switch (entry.type)
-                {
-                    case EntryType::EXACT:
-                        return entry.score;
-                        break;
-                    
-                    case EntryType::LOWERBOUND:
-                        if(entry.score > alpha){
-                            alpha = entry.score;
-                        }
-                        break;
-                    
-                    case EntryType::UPPERBOUND:
-                        if(entry.score < beta){
-                            beta = entry.score;
-                        }
-                        break;
-                    
-                    default:
-                        break;
+        /*Alpha is the best score that the current player (treated as a maximizing player in negamax framework) can achieve so far.
+        Beta is the best score that the opponent (treated as a minimizing player in negamax framework) can achieve so far.
+        Can achieve means that the opponent can force a score of beta or higher, and the current player can force a score of alpha or higher.*/
+
+
+         
+        nodesSearched[omp_get_thread_num()]++;
+
+        if (pos.is_draw())
+        {
+            return DRAW_OR_STALEMATE_CONSTANT;
+        }
+        uint64_t hash = pos.hash();
+        int loggerIndex = -1;
+        #if USE_LOGGER
+            std::vector<std::pair<std::string, std::string>> properties = {{"depth", std::to_string(depth)}, {"alpha", std::to_string(alpha)}, {"beta", std::to_string(beta)}, {"fen", pos.get_fen()}};
+            loggerIndex = logger->addChild(parentLoggerIndex, properties);
+        #endif
+    
+        //print thread id and position
+        #if USE_TRANSPOSITION_TABLE
+            TTEntry entry;
+            
+            if(transpositionTable->tryGetEntry(hash, entry)){
+                if(entry.depth >= depth){
+                    switch (entry.type)
+                    {
+                        case EntryType::EXACT:
+                            return entry.score;
+                            break;
+                        
+                        case EntryType::LOWERBOUND:
+                            if(entry.score > alpha){
+                                alpha = entry.score;
+                            }
+                            break;
+                        
+                        case EntryType::UPPERBOUND:
+                            if(entry.score < beta){
+                                beta = entry.score;
+                            }
+                            break;
+                        
+                        default:
+                            break;
+                    }
                 }
+                if (alpha >= beta)
+                {
+                    return alpha;
+                }
+
             }
-            if (alpha >= beta)
-            {
-                return alpha;
-            }
-
-        }
-    #endif
-
-    // If search ended, evaluate position
-    if (depth <= 0)
-    {
-        int score = evaluate(pos, alpha, beta);
-
-        #if USE_TRANSPOSITION_TABLE
-           transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
         #endif
-        return score;
-    }
 
-    int nullMoveScore = 0;
-    if (tryNullMove(pos, depth, alpha, beta, nullMoveAllowed, nullMoveScore, false))
-    {
-        return nullMoveScore;
-    }
+        // If search ended, evaluate position
+        if (depth <= 0)
+        {
+            int score = quiescenceSearch(pos, alpha, beta, nullMoveAllowed, QUIESCENCE_DEPTH, loggerIndex); 
 
-    std::vector<libchess::Move> moves = pos.legal_moves();
-    int checkmateOrStalemateScore;
-    if (checkStaleMateOrCheckmateFromMoves(pos, moves, checkmateOrStalemateScore))
-    {
-        int score = checkmateOrStalemateScore * depth;
-        #if USE_TRANSPOSITION_TABLE
-            transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
-        #endif
-        return score;
-    }
-
-    orderMoves(moves, pos, depth, hash);
-
-    if (tryMultiCutPruning(pos, moves, depth, beta))
-    {
-        return beta;
-    }
-
-    int b = beta;
-    int score;
-    bool first = true;
-    int originalAlpha = alpha;
-    libchess::Move bestMove = moves[0];
-    int posScore = evaluate(pos, alpha, beta);
-    for (libchess::Move move : moves)
-    {  
-        if(depth <= 3 and futilityPrune(pos, move, depth, alpha, beta, posScore)){
-            continue;
-        }
-        historyMoves->increaseTrialCount(pos.turn(), move);
-        pos.makemove(move);
-        score = -search(pos, depth - 1, -b, -alpha, true);
-        if(score > alpha && score < beta && !first){
-            score = -search(pos, depth - 1, -beta, -alpha, true);
-        }
-        pos.undomove();
-        if(score > alpha){
-            alpha = score;
-            bestMove = move;
-        }
-        if(alpha >= beta){
-            nCutoffs++;
-            #if USE_HISTORY_TABLE
-                historyMoves->increaseHistoryScore(pos.turn(), move, depth);
-                killerMoveTable->addKillerMove(pos.turn(), move, currentDepth - depth);
-            #endif
             #if USE_TRANSPOSITION_TABLE
-                transpositionTable->addEntry(hash, depth, alpha, EntryType::LOWERBOUND);
+               transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
             #endif
-            return alpha;
-            break;
+            return score;
         }
-        b = alpha + 1;
-        first = false;
-        
-    }
-    #if USE_PV_TABLE
-        if(score > originalAlpha){
-            pvTable->addEntry(hash, bestMove, depth);
-        }
-    #endif
-    #if USE_TRANSPOSITION_TABLE
-        EntryType entryType;
 
-        if (alpha <= originalAlpha)
+        int nullMoveScore = 0;
+        if (tryNullMove(pos, depth, alpha, beta, nullMoveAllowed, nullMoveScore, false, loggerIndex))
         {
-            entryType = EntryType::UPPERBOUND;
+            return nullMoveScore;
         }
-        else
+
+        std::vector<libchess::Move> moves = pos.legal_moves();
+        int checkmateOrStalemateScore;
+        if (checkStaleMateOrCheckmateFromMoves(pos, moves, checkmateOrStalemateScore))
         {
-            entryType = EntryType::EXACT;
+            int score = checkmateOrStalemateScore * depth;
+            #if USE_TRANSPOSITION_TABLE
+                transpositionTable->addEntry(hash, depth, score, EntryType::EXACT);
+            #endif
+            return score;
         }
-        transpositionTable->addEntry(hash, depth, alpha, entryType);
-        
-        
-        
-    #endif
-    return alpha;
+
+        orderMoves(moves, pos, depth, hash);
+
+        if (tryMultiCutPruning(pos, moves, depth, beta, loggerIndex))
+        {
+            return beta;
+        }
+
+        int b = beta;
+        int score;
+        bool first = true;
+        int originalAlpha = alpha;
+        libchess::Move bestMove = moves[0];
+        int posScore = evaluate(pos, alpha, beta);
+        for (libchess::Move move : moves)
+        {  
+            if(depth <= 3 and futilityPrune(pos, move, depth, alpha, beta, posScore)){
+                continue;
+            }
+            historyMoves->increaseTrialCount(pos.turn(), move);
+            pos.makemove(move);
+            score = -search(pos, depth - 1, -b, -alpha, true, loggerIndex);
+            #if USE_LOGGER
+                completeLastChildProperties(loggerIndex, -score, move);
+            #endif
+            if(score > alpha && score < beta && !first){
+                score = -search(pos, depth - 1, -beta, -alpha, true, loggerIndex);
+            }
+            #if USE_LOGGER
+                completeLastChildProperties(loggerIndex, -score, move);
+            #endif
+            pos.undomove();
+            if(score > alpha){
+                alpha = score;
+                bestMove = move;
+            }
+            if(alpha >= beta){
+                nCutoffs++;
+                #if USE_HISTORY_TABLE
+                    historyMoves->increaseHistoryScore(pos.turn(), move, depth);
+                    killerMoveTable->addKillerMove(pos.turn(), move, currentDepth - depth);
+                #endif
+                #if USE_TRANSPOSITION_TABLE
+                    transpositionTable->addEntry(hash, depth, alpha, EntryType::LOWERBOUND);
+                #endif
+                return alpha;
+                break;
+            }
+            b = alpha + 1;
+            first = false;
+            
+        }
+        #if USE_PV_TABLE
+            if(score > originalAlpha){
+                pvTable->addEntry(hash, bestMove, depth);
+            }
+        #endif
+        #if USE_TRANSPOSITION_TABLE
+            EntryType entryType;
+
+            if (alpha <= originalAlpha)
+            {
+                entryType = EntryType::UPPERBOUND;
+            }
+            else
+            {
+                entryType = EntryType::EXACT;
+            }
+            transpositionTable->addEntry(hash, depth, alpha, entryType);
+            
+            
+            
+        #endif
+        return alpha;
 }
  
     inline void setWeights(int weights[20])
@@ -808,19 +848,39 @@ private:
     OpeningBook *openingBook;
     PositionHasher *zobristHasher;
     int pieceValues[7];
-    inline int nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent)
-{
-    pos.makenull();
-    int reduct = (USE_ADPT && depth > ADPT_DEPTH) ? NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION - 1;
-    int score;
     
-    //score = quiescent? -quiescenceSearch(pos, depth - reduct, -beta, -beta + 1, false) : -search(pos, -beta, -beta + 1, false, depth - reduct);
-    score = -search(pos, depth - reduct, -beta, -beta + 1, false);
-    pos.undonull();
-    return score;
-}
-    inline int quiescenceSearch(libchess::Position &pos, int alpha, int beta,  bool nullMoveAllowed, int depth)
+    #if USE_LOGGER
+    SearchLogger *logger;
+    #endif
+
+    inline void completeLastChildProperties(int loggerIndex, int score, libchess::Move move){
+        //scoreproperty
+        #if USE_LOGGER
+        std::pair<std::string, std::string> scoreProperty = {"score", std::to_string(score)};
+        logger->addPropertyToLastChild(loggerIndex, scoreProperty);
+        //move property
+        std::pair<std::string, std::string> moveProperty = {"move", move};
+        logger->addPropertyToLastChild(loggerIndex, moveProperty);
+        #endif
+    }
+    inline int nullMoveSearch(libchess::Position &pos, int depth, int alpha, int beta, bool quiescent, int loggerIndex = -1)
     {
+        pos.makenull();
+
+        int reduct = (USE_ADPT && depth > ADPT_DEPTH) ? NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION - 1;
+        int score;
+        
+        //score = quiescent? -quiescenceSearch(pos, depth - reduct, -beta, -beta + 1, false) : -search(pos, -beta, -beta + 1, false, depth - reduct);
+        score = -search(pos, depth - reduct, -beta, -beta + 1, false, loggerIndex);
+        pos.undonull();
+        #if USE_LOGGER
+            completeLastChildProperties(loggerIndex, -score, libchess::Move());
+        #endif
+        return score;
+    }
+    inline int quiescenceSearch(libchess::Position &pos, int alpha, int beta,  bool nullMoveAllowed, int depth, int loggerIndex = -1)
+    {
+        nodesSearched[omp_get_thread_num()]++;
         int stand_pat = evaluate(pos, alpha, beta);
         if (stand_pat >= beta or depth == 0)
             return stand_pat;
@@ -842,8 +902,11 @@ private:
             if (move.type() == libchess::MoveType::ksc || move.type() == libchess::MoveType::qsc)
                 continue;
             pos.makemove(move);
-            int score = -quiescenceSearch(pos, -beta, -alpha, true, depth - 1);
+            int score = -quiescenceSearch(pos, -beta, -alpha, true, depth - 1, loggerIndex);
             pos.undomove();
+            #if USE_LOGGER
+                completeLastChildProperties(loggerIndex, -score, move);
+            #endif
             if (score >= beta)
             {
                 nCutoffs++;
@@ -972,7 +1035,7 @@ private:
         }
     }
 
-    inline bool tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent)
+    inline bool tryNullMove(libchess::Position &pos, int depth, int alpha, int beta, bool nullMoveAllowed, int &score, bool quiescent, int loggerIndex = -1)
     {
         // color to move
         libchess::Side side = pos.turn();
@@ -989,7 +1052,7 @@ private:
             {
                 return false;
             }
-            int tryScore = nullMoveSearch(pos, depth, alpha, beta, quiescent);
+            int tryScore = nullMoveSearch(pos, depth, alpha, beta, quiescent, loggerIndex);
             
             
             if (tryScore >= beta)
@@ -1018,7 +1081,7 @@ private:
         return false;
     }
 
-    inline bool tryMultiCutPruning(libchess::Position &pos, const std::vector<libchess::Move> &moves, int depth, int beta){
+    inline bool tryMultiCutPruning(libchess::Position &pos, const std::vector<libchess::Move> &moves, int depth, int beta, int loggerIndex = -1){
         if (depth >= MULTICUT_REDUCTION)
         {
             int count = 0;
@@ -1027,8 +1090,12 @@ private:
             {
                 libchess::Move move = moves[i];
                 pos.makemove(move);
-                int score = -search(pos, depth - MULTICUT_REDUCTION - 1, -beta, 1-beta, true);
+                int score = -search(pos, depth - MULTICUT_REDUCTION - 1, -beta, 1-beta, true, loggerIndex);
                 pos.undomove();
+                #if USE_LOGGER
+                    completeLastChildProperties(loggerIndex, -score, move);
+                #endif
+                
                 if (score >= beta)
                 {
 
